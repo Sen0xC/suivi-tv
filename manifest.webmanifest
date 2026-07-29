@@ -1,0 +1,18 @@
+{
+  "name": "Suivi TV",
+  "short_name": "Suivi TV",
+  "description": "Suivre ses séries et savoir quoi regarder ensuite.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#050608",
+  "theme_color": "#050608",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

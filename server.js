@@ -1,0 +1,1188 @@
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const { URL } = require("url");
+
+loadEnv();
+
+const PORT = Number(process.env.PORT || 4173);
+const ROOT = __dirname;
+const DATA_DIR = path.join(ROOT, "data");
+const DB_PATH = path.join(DATA_DIR, "database.json");
+const TMDB_BASE = "https://api.themoviedb.org/3";
+const IMAGE_BASE = "https://image.tmdb.org/t/p/";
+const LOCAL_USER_ID = process.env.APP_USER_ID || "local-user";
+const LOCAL_USER_NAME = process.env.APP_USER_NAME || "Alex";
+
+const fallbackCatalog = [
+  { mediaType: "tv", tmdbId: 100088, title: "The Last of Us", year: 2023 },
+  { mediaType: "tv", tmdbId: 1396, title: "Breaking Bad", year: 2008 },
+  { mediaType: "tv", tmdbId: 70523, title: "Dark", year: 2017 },
+  { mediaType: "tv", tmdbId: 76479, title: "The Boys", year: 2019 },
+  { mediaType: "tv", tmdbId: 94605, title: "Arcane", year: 2021 },
+  { mediaType: "tv", tmdbId: 106379, title: "Fallout", year: 2024 },
+  { mediaType: "tv", tmdbId: 95396, title: "Severance", year: 2022 },
+  { mediaType: "tv", tmdbId: 95557, title: "Invincible", year: 2021 },
+  { mediaType: "movie", tmdbId: 550, title: "Fight Club", year: 1999 },
+  { mediaType: "movie", tmdbId: 603, title: "The Matrix", year: 1999 }
+];
+
+const fallbackDetails = {
+  "tv:100088": {
+    mediaType: "tv",
+    tmdbId: 100088,
+    title: "The Last of Us",
+    year: 2023,
+    genres: ["Drame", "Science-fiction"],
+    rating: 4.8,
+    poster: "https://image.tmdb.org/t/p/w500/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg",
+    backdrop: "https://image.tmdb.org/t/p/original/900tHlUYUkp7Ol04XFSoAaEIXcT.jpg",
+    synopsis: "Joel et Ellie traversent un monde brutal apres l'effondrement de la civilisation moderne.",
+    seasons: [9, 7],
+    nextAir: null
+  },
+  "tv:1396": {
+    mediaType: "tv",
+    tmdbId: 1396,
+    title: "Breaking Bad",
+    year: 2008,
+    genres: ["Drame", "Crime"],
+    rating: 4.9,
+    poster: "https://image.tmdb.org/t/p/w500/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
+    backdrop: "https://image.tmdb.org/t/p/original/tsRy63Mu5cu8etL1X7ZLyf7UP1M.jpg",
+    synopsis: "Un professeur de chimie transforme sa vie et son entourage apres un diagnostic brutal.",
+    seasons: [7, 13, 13, 13, 16],
+    nextAir: null
+  },
+  "tv:70523": {
+    mediaType: "tv",
+    tmdbId: 70523,
+    title: "Dark",
+    year: 2017,
+    genres: ["Mystere", "Science-fiction"],
+    rating: 4.8,
+    poster: "https://image.tmdb.org/t/p/w500/apbrbWs8M9lyOpJYU5WXrpFbk1Z.jpg",
+    backdrop: "https://image.tmdb.org/t/p/original/3lBDg3i6nn5R2NKFCJ6oKyUo2j5.jpg",
+    synopsis: "La disparition d'un enfant expose les fractures temporelles d'une ville allemande.",
+    seasons: [10, 8, 8],
+    nextAir: null
+  }
+};
+
+ensureLocalDb();
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+
+    if (url.pathname.startsWith("/api/")) {
+      await handleApi(req, res, url);
+      return;
+    }
+
+    serveStatic(res, url.pathname);
+  } catch (error) {
+    sendJson(res, 500, normalizeServerError(error));
+  }
+});
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`Le port ${PORT} est deja utilise. Ferme l'autre serveur ou lance avec: $env:PORT=4174; npm start`);
+    process.exit(1);
+  }
+  throw error;
+});
+
+server.listen(PORT, () => {
+  const storage = hasSupabaseConfig() ? "Supabase" : "base locale";
+  console.log(`Suivi TV disponible sur http://localhost:${PORT} (${storage})`);
+});
+
+async function handleApi(req, res, url) {
+  if (req.method === "GET" && url.pathname === "/api/health") {
+    sendJson(res, 200, {
+      ok: true,
+      storage: hasSupabaseConfig() ? "supabase" : "local",
+      tmdb: hasTmdbAuth()
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/me") {
+    const db = await readDb();
+    await ensureUser(db);
+    await refreshUpcomingAirData(db);
+    sendJson(res, 200, { user: db.users[0], library: enrichLibrary(db), social: enrichSocial(db) });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/trending") {
+    const items = await getTrending();
+    sendJson(res, 200, { items });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/recommendations") {
+    const db = await readDb();
+    const items = await getRecommendations(db);
+    sendJson(res, 200, { items });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/search") {
+    const query = url.searchParams.get("query") || "";
+    const items = await searchMedia(query);
+    sendJson(res, 200, { items });
+    return;
+  }
+
+  const mediaMatch = url.pathname.match(/^\/api\/media\/(tv|movie)\/(\d+)$/);
+  if (req.method === "GET" && mediaMatch) {
+    const media = await getMediaDetails(mediaMatch[1], Number(mediaMatch[2]));
+    sendJson(res, 200, { media });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/library") {
+    const body = await readBody(req);
+    const item = await addLibraryItem(body.mediaType, Number(body.tmdbId), body.status || "planned");
+    sendJson(res, 201, { item });
+    return;
+  }
+
+  const libraryMatch = url.pathname.match(/^\/api\/library\/(tv|movie)\/(\d+)$/);
+  if (libraryMatch && req.method === "PATCH") {
+    const body = await readBody(req);
+    const item = await updateLibraryItem(libraryMatch[1], Number(libraryMatch[2]), body);
+    sendJson(res, 200, { item });
+    return;
+  }
+
+  const seenMatch = url.pathname.match(/^\/api\/library\/(tv|movie)\/(\d+)\/seen$/);
+  if (seenMatch && req.method === "POST") {
+    const item = await markNextSeen(seenMatch[1], Number(seenMatch[2]));
+    sendJson(res, 200, { item });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/friends") {
+    const body = await readBody(req);
+    const social = await addFriend(String(body.friendId || "").trim(), String(body.name || "").trim());
+    sendJson(res, 201, { social });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/lists") {
+    const body = await readBody(req);
+    const list = await createList(String(body.name || "").trim(), String(body.description || "").trim());
+    sendJson(res, 201, { list });
+    return;
+  }
+
+  const listItemMatch = url.pathname.match(/^\/api\/lists\/([^/]+)\/items$/);
+  if (req.method === "POST" && listItemMatch) {
+    const body = await readBody(req);
+    const list = await addListItem(listItemMatch[1], body.mediaType, Number(body.tmdbId), String(body.note || "").trim());
+    sendJson(res, 201, { list });
+    return;
+  }
+
+  sendJson(res, 404, { error: "Route introuvable" });
+}
+
+async function getTrending() {
+  if (hasTmdbAuth()) {
+    const data = await tmdb("/trending/all/week", { language: "fr-FR" });
+    return data.results.filter(isSupportedMedia).slice(0, 18).map(normalizeSearchResult);
+  }
+
+  return fallbackCatalog.map((item) => normalizeFallback(item));
+}
+
+async function searchMedia(query) {
+  if (!query.trim()) {
+    return getTrending();
+  }
+
+  if (hasTmdbAuth()) {
+    const data = await tmdb("/search/multi", {
+      query,
+      language: "fr-FR",
+      include_adult: "false"
+    });
+    return data.results.filter(isSupportedMedia).slice(0, 20).map(normalizeSearchResult);
+  }
+
+  return fallbackCatalog
+    .filter((item) => item.title.toLowerCase().includes(query.toLowerCase()))
+    .map((item) => normalizeFallback(item));
+}
+
+async function getRecommendations(db) {
+  const libraryKeys = new Set(Object.keys(db.library));
+  const seeds = Object.values(db.library)
+    .filter((item) => ["watching", "finished"].includes(item.status))
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+    .flatMap((item) => item.favorite ? [item, item, item] : [item])
+    .slice(0, 8);
+
+  if (!hasTmdbAuth() || !seeds.length) {
+    const fallback = await getTrending();
+    return fallback.filter((item) => !libraryKeys.has(dbKey(item.mediaType, item.tmdbId))).slice(0, 10);
+  }
+
+  const responses = await Promise.allSettled(
+    seeds.map((seed) => tmdb(`/${seed.mediaType}/${seed.tmdbId}/recommendations`, { language: "fr-FR" }))
+  );
+
+  const seen = new Set(libraryKeys);
+  const items = [];
+  responses.forEach((result) => {
+    if (result.status !== "fulfilled") {
+      return;
+    }
+    result.value.results.filter(isSupportedMedia).forEach((item) => {
+      const normalized = normalizeSearchResult(item);
+      const key = dbKey(normalized.mediaType, normalized.tmdbId);
+      if (!seen.has(key)) {
+        seen.add(key);
+        items.push(normalized);
+      }
+    });
+  });
+
+  return items.slice(0, 12);
+}
+
+async function getMediaDetails(mediaType, tmdbId) {
+  const key = dbKey(mediaType, tmdbId);
+  const db = await readDb();
+  const stored = db.media[key];
+  if (shouldUseStoredMedia(stored, mediaType)) {
+    return stored;
+  }
+
+  const normalized = hasTmdbAuth()
+    ? await normalizeDetails(mediaType, await tmdb(`/${mediaType}/${tmdbId}`, { language: "fr-FR" }))
+    : normalizeFallback(fallbackCatalog.find((item) => dbKey(item.mediaType, item.tmdbId) === key));
+
+  db.media[key] = normalized;
+  await writeDb(db);
+  return normalized;
+}
+
+async function addLibraryItem(mediaType, tmdbId, status) {
+  const db = await readDb();
+  await ensureUser(db);
+  const media = await getMediaDetails(mediaType, tmdbId);
+  const key = dbKey(mediaType, tmdbId);
+
+  db.media[key] = media;
+  db.library[key] = db.library[key] || {
+    userId: LOCAL_USER_ID,
+    mediaType,
+    tmdbId,
+    status,
+    watched: mediaType === "movie" ? { complete: false } : { season: 1, episode: 0 },
+    favorite: false,
+    addedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  db.library[key].status = status;
+  db.library[key].updatedAt = new Date().toISOString();
+  await writeDb(db);
+  return enrichItem(db.library[key], media);
+}
+
+async function updateLibraryItem(mediaType, tmdbId, patch) {
+  const db = await readDb();
+  const key = dbKey(mediaType, tmdbId);
+  const item = db.library[key];
+  if (!item) {
+    throw new Error("Element absent de la bibliotheque");
+  }
+
+  if (patch.status) {
+    item.status = patch.status;
+  }
+  if (patch.watched) {
+    item.watched = patch.watched;
+  }
+  if (typeof patch.favorite === "boolean") {
+    item.favorite = patch.favorite;
+  }
+  item.updatedAt = new Date().toISOString();
+  await writeDb(db);
+  return enrichItem(item, db.media[key]);
+}
+
+async function markNextSeen(mediaType, tmdbId) {
+  const db = await readDb();
+  const key = dbKey(mediaType, tmdbId);
+  const item = db.library[key];
+  const media = db.media[key];
+  if (!item || !media) {
+    throw new Error("Element absent de la bibliotheque");
+  }
+
+  if (mediaType === "movie") {
+    item.watched = { complete: true };
+    item.status = "finished";
+  } else {
+    const next = nextEpisode(media, item.watched);
+    if (next) {
+      item.watched = next;
+      if (!nextEpisode(media, item.watched)) {
+        item.status = "finished";
+      } else if (item.status === "planned") {
+        item.status = "watching";
+      }
+    } else {
+      item.status = "finished";
+    }
+  }
+
+  item.updatedAt = new Date().toISOString();
+  await writeDb(db);
+  return enrichItem(item, media);
+}
+
+function enrichLibrary(db) {
+  return Object.values(db.library).map((item) => enrichItem(item, db.media[dbKey(item.mediaType, item.tmdbId)]));
+}
+
+function enrichItem(item, media) {
+  return {
+    ...media,
+    user: {
+      status: item.status,
+      watched: item.watched,
+      favorite: Boolean(item.favorite),
+      addedAt: item.addedAt,
+      updatedAt: item.updatedAt
+    }
+  };
+}
+
+function enrichSocial(db) {
+  const usersById = Object.fromEntries(db.users.map((user) => [user.id, user]));
+  const lists = Object.values(db.lists || {})
+    .filter((list) => list.userId === LOCAL_USER_ID)
+    .map((list) => ({
+      ...list,
+      items: Object.values(db.listItems || {})
+        .filter((item) => item.listId === list.id)
+        .map((item) => enrichListItem(item, db.media[dbKey(item.mediaType, item.tmdbId)]))
+    }));
+
+  return {
+    friends: Object.values(db.friendships || {})
+      .filter((friendship) => friendship.userId === LOCAL_USER_ID)
+      .map((friendship) => ({
+        ...friendship,
+        friend: usersById[friendship.friendId] || { id: friendship.friendId, name: friendship.friendId }
+      })),
+    lists
+  };
+}
+
+function enrichListItem(item, media) {
+  return { ...item, media };
+}
+
+async function refreshUpcomingAirData(db) {
+  if (!hasTmdbAuth()) {
+    return;
+  }
+
+  const items = Object.values(db.library)
+    .filter((item) => item.mediaType === "tv")
+    .slice(0, 12);
+  let changed = false;
+
+  const results = await Promise.allSettled(
+    items.map((item) => tmdb(`/tv/${item.tmdbId}`, { language: "fr-FR" }))
+  );
+
+  results.forEach((result, index) => {
+    if (result.status !== "fulfilled") {
+      return;
+    }
+    const item = items[index];
+    const key = dbKey(item.mediaType, item.tmdbId);
+    const media = db.media[key];
+    if (!media) {
+      return;
+    }
+    const nextAirEpisode = normalizeAirEpisode(result.value.next_episode_to_air);
+    media.nextAir = nextAirEpisode?.airDate || null;
+    media.nextAirEpisode = nextAirEpisode;
+    changed = true;
+  });
+
+  if (changed) {
+    await writeMediaCache(db);
+  }
+}
+
+async function writeMediaCache(db) {
+  if (!hasSupabaseConfig()) {
+    await writeDb(db);
+    return;
+  }
+
+  const mediaRows = Object.values(db.media).map(toMediaRow);
+  if (mediaRows.length) {
+    await supabaseRequest("/suivi_media?on_conflict=media_type,tmdb_id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify(mediaRows)
+    });
+  }
+}
+
+async function addFriend(friendId, name) {
+  if (!friendId) {
+    throw new Error("Identifiant ami manquant");
+  }
+  if (friendId === LOCAL_USER_ID) {
+    throw new Error("Tu ne peux pas t'ajouter toi-meme");
+  }
+
+  const db = await readDb();
+  await ensureUser(db);
+  db.users.push(...(!db.users.some((user) => user.id === friendId) ? [{ id: friendId, name: name || friendId, createdAt: new Date().toISOString() }] : []));
+  db.friendships = db.friendships || {};
+  db.friendships[`${LOCAL_USER_ID}:${friendId}`] = { userId: LOCAL_USER_ID, friendId, createdAt: new Date().toISOString() };
+  await writeDb(db);
+  return enrichSocial(db);
+}
+
+async function createList(name, description) {
+  if (!name) {
+    throw new Error("Nom de liste manquant");
+  }
+  const db = await readDb();
+  await ensureUser(db);
+  db.lists = db.lists || {};
+  const id = `list-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  db.lists[id] = {
+    id,
+    userId: LOCAL_USER_ID,
+    name,
+    description,
+    isPublic: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await writeDb(db);
+  return enrichSocial(db).lists.find((list) => list.id === id);
+}
+
+async function addListItem(listId, mediaType, tmdbId, note) {
+  const db = await readDb();
+  const list = db.lists?.[listId];
+  if (!list || list.userId !== LOCAL_USER_ID) {
+    throw new Error("Liste introuvable");
+  }
+  const media = await getMediaDetails(mediaType, tmdbId);
+  db.media[dbKey(mediaType, tmdbId)] = media;
+  db.listItems = db.listItems || {};
+  db.listItems[`${listId}:${mediaType}:${tmdbId}`] = { listId, mediaType, tmdbId, note, addedAt: new Date().toISOString() };
+  list.updatedAt = new Date().toISOString();
+  await writeDb(db);
+  return enrichSocial(db).lists.find((entry) => entry.id === listId);
+}
+
+function nextEpisode(media, watched) {
+  const seasonTotal = media.seasons[watched.season - 1] || 0;
+  if (watched.episode < seasonTotal) {
+    return { season: watched.season, episode: watched.episode + 1 };
+  }
+  if (watched.season < media.seasons.length) {
+    return { season: watched.season + 1, episode: 1 };
+  }
+  return null;
+}
+
+async function readDb() {
+  if (hasSupabaseConfig()) {
+    return readSupabaseDb();
+  }
+  return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
+}
+
+async function writeDb(db) {
+  if (hasSupabaseConfig()) {
+    await writeSupabaseDb(db);
+    return;
+  }
+  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+}
+
+async function readSupabaseDb() {
+  const [users, mediaRows, libraryRows, friendshipRows, listRows, listItemRows] = await Promise.all([
+    supabaseRequest("/suivi_users?select=*"),
+    supabaseRequest("/suivi_media?select=*"),
+    supabaseRequest("/suivi_library?select=*&user_id=eq." + encodeURIComponent(LOCAL_USER_ID)),
+    supabaseOptional("/suivi_friendships?select=*&user_id=eq." + encodeURIComponent(LOCAL_USER_ID)),
+    supabaseOptional("/suivi_lists?select=*&user_id=eq." + encodeURIComponent(LOCAL_USER_ID)),
+    supabaseOptional("/suivi_list_items?select=*")
+  ]);
+
+  const media = {};
+  mediaRows.forEach((row) => {
+    media[dbKey(row.media_type, row.tmdb_id)] = fromMediaRow(row);
+  });
+
+  const library = {};
+  libraryRows.forEach((row) => {
+    library[dbKey(row.media_type, row.tmdb_id)] = fromLibraryRow(row);
+  });
+
+  const friendships = {};
+  friendshipRows.forEach((row) => {
+    friendships[`${row.user_id}:${row.friend_id}`] = fromFriendshipRow(row);
+  });
+
+  const lists = {};
+  listRows.forEach((row) => {
+    lists[row.id] = fromListRow(row);
+  });
+
+  const listIds = new Set(Object.keys(lists));
+  const listItems = {};
+  listItemRows
+    .filter((row) => listIds.has(row.list_id))
+    .forEach((row) => {
+      listItems[`${row.list_id}:${row.media_type}:${row.tmdb_id}`] = fromListItemRow(row);
+    });
+
+  return {
+    users: users.length ? users.map(fromUserRow) : [],
+    media,
+    library,
+    friendships,
+    lists,
+    listItems
+  };
+}
+
+async function writeSupabaseDb(db) {
+  await ensureUser(db);
+
+  const mediaRows = Object.values(db.media).map(toMediaRow);
+  const libraryRows = Object.values(db.library).map(toLibraryRow);
+  const userRows = Object.values(db.users).map(toUserRow);
+  const friendshipRows = Object.values(db.friendships || {}).map(toFriendshipRow);
+  const listRows = Object.values(db.lists || {}).map(toListRow);
+  const listItemRows = Object.values(db.listItems || {}).map(toListItemRow);
+
+  if (userRows.length) {
+    await supabaseRequest("/suivi_users?on_conflict=id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify(userRows)
+    });
+  }
+
+  if (mediaRows.length) {
+    await supabaseRequest("/suivi_media?on_conflict=media_type,tmdb_id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify(mediaRows)
+    });
+  }
+
+  if (libraryRows.length) {
+    await supabaseRequest("/suivi_library?on_conflict=user_id,media_type,tmdb_id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify(libraryRows)
+    });
+  }
+
+  if (friendshipRows.length) {
+    await supabaseRequest("/suivi_friendships?on_conflict=user_id,friend_id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify(friendshipRows)
+    });
+  }
+
+  if (listRows.length) {
+    await supabaseRequest("/suivi_lists?on_conflict=id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify(listRows)
+    });
+  }
+
+  if (listItemRows.length) {
+    await supabaseRequest("/suivi_list_items?on_conflict=list_id,media_type,tmdb_id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify(listItemRows)
+    });
+  }
+}
+
+async function ensureUser(db) {
+  if (!db.users.length) {
+    db.users.push({
+      id: LOCAL_USER_ID,
+      name: LOCAL_USER_NAME,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  if (hasSupabaseConfig()) {
+    await supabaseRequest("/suivi_users?on_conflict=id", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify([toUserRow(db.users[0])])
+    });
+  }
+}
+
+async function supabaseRequest(pathname, options = {}) {
+  const key = getSupabaseKey();
+  const baseUrl = process.env.SUPABASE_URL.replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/rest/v1${pathname}`, {
+    method: options.method || "GET",
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+      ...options.headers
+    },
+    body: options.body
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Supabase ${response.status}: ${text}`);
+  }
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
+}
+
+async function supabaseOptional(pathname) {
+  try {
+    return await supabaseRequest(pathname);
+  } catch (error) {
+    if (error.message.includes("PGRST205") || error.message.includes("Could not find the table")) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function toUserRow(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    created_at: user.createdAt
+  };
+}
+
+function fromUserRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at
+  };
+}
+
+function toMediaRow(media) {
+  return {
+    media_type: media.mediaType,
+    tmdb_id: media.tmdbId,
+    title: media.title,
+    release_year: media.year,
+    genres: media.genres || [],
+    rating: media.rating,
+    poster: media.poster || "",
+    backdrop: media.backdrop || "",
+    synopsis: media.synopsis || "",
+    seasons: media.seasons || [1],
+    next_air: media.nextAirEpisode ? JSON.stringify(media.nextAirEpisode) : media.nextAir
+  };
+}
+
+function fromMediaRow(row) {
+  return {
+    mediaType: row.media_type,
+    tmdbId: row.tmdb_id,
+    title: row.title,
+    year: row.release_year,
+    genres: row.genres || [],
+    rating: row.rating,
+    poster: row.poster || "",
+    backdrop: row.backdrop || "",
+    synopsis: row.synopsis || "",
+    seasons: row.seasons || [1],
+    nextAir: parseNextAir(row.next_air)?.airDate || row.next_air,
+    nextAirEpisode: parseNextAir(row.next_air)
+  };
+}
+
+function toLibraryRow(item) {
+  return {
+    user_id: item.userId,
+    media_type: item.mediaType,
+    tmdb_id: item.tmdbId,
+    status: item.status,
+    watched: item.watched,
+    favorite: Boolean(item.favorite),
+    added_at: item.addedAt,
+    updated_at: item.updatedAt
+  };
+}
+
+function fromLibraryRow(row) {
+  return {
+    userId: row.user_id,
+    mediaType: row.media_type,
+    tmdbId: row.tmdb_id,
+    status: row.status,
+    watched: row.watched,
+    favorite: Boolean(row.favorite),
+    addedAt: row.added_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function toFriendshipRow(item) {
+  return {
+    user_id: item.userId,
+    friend_id: item.friendId,
+    created_at: item.createdAt
+  };
+}
+
+function fromFriendshipRow(row) {
+  return {
+    userId: row.user_id,
+    friendId: row.friend_id,
+    createdAt: row.created_at
+  };
+}
+
+function toListRow(list) {
+  return {
+    id: list.id,
+    user_id: list.userId,
+    name: list.name,
+    description: list.description || "",
+    is_public: list.isPublic !== false,
+    created_at: list.createdAt,
+    updated_at: list.updatedAt
+  };
+}
+
+function fromListRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    description: row.description || "",
+    isPublic: row.is_public !== false,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function toListItemRow(item) {
+  return {
+    list_id: item.listId,
+    media_type: item.mediaType,
+    tmdb_id: item.tmdbId,
+    note: item.note || "",
+    added_at: item.addedAt
+  };
+}
+
+function fromListItemRow(row) {
+  return {
+    listId: row.list_id,
+    mediaType: row.media_type,
+    tmdbId: row.tmdb_id,
+    note: row.note || "",
+    addedAt: row.added_at
+  };
+}
+
+async function tmdb(endpoint, params = {}) {
+  const url = new URL(`${TMDB_BASE}${endpoint}`);
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+
+  const headers = { accept: "application/json" };
+  if (process.env.TMDB_READ_ACCESS_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.TMDB_READ_ACCESS_TOKEN}`;
+  } else if (process.env.TMDB_API_KEY) {
+    url.searchParams.set("api_key", process.env.TMDB_API_KEY);
+  }
+
+  const response = await fetch(url, { headers });
+  if (!response.ok) {
+    throw new Error(`TMDB ${response.status}`);
+  }
+  return response.json();
+}
+
+function normalizeSearchResult(item) {
+  const mediaType = item.media_type;
+  const title = mediaType === "movie" ? item.title : item.name;
+  const date = mediaType === "movie" ? item.release_date : item.first_air_date;
+  return {
+    mediaType,
+    tmdbId: item.id,
+    title,
+    year: date ? Number(date.slice(0, 4)) : null,
+    rating: item.vote_average ? Number((item.vote_average / 2).toFixed(1)) : null,
+    poster: imageUrl(item.poster_path, "w500"),
+    backdrop: imageUrl(item.backdrop_path, "original"),
+    synopsis: item.overview || "Aucun synopsis disponible."
+  };
+}
+
+async function normalizeDetails(mediaType, data) {
+  const title = mediaType === "movie" ? data.title : data.name;
+  const date = mediaType === "movie" ? data.release_date : data.first_air_date;
+  const seasons = mediaType === "movie" ? [1] : (data.seasons || []).filter((season) => season.season_number > 0).map((season) => season.episode_count || 0);
+  const [episodes, providers] = await Promise.all([
+    mediaType === "tv" ? getEpisodeMap(data.id, seasons) : Promise.resolve({}),
+    getWatchProviders(mediaType, data.id)
+  ]);
+
+  return {
+    mediaType,
+    tmdbId: data.id,
+    title,
+    year: date ? Number(date.slice(0, 4)) : null,
+    genres: (data.genres || []).map((genre) => genre.name),
+    rating: data.vote_average ? Number((data.vote_average / 2).toFixed(1)) : null,
+    poster: imageUrl(data.poster_path, "w500"),
+    backdrop: imageUrl(data.backdrop_path, "original") || imageUrl(data.poster_path, "w500"),
+    synopsis: data.overview || "Aucun synopsis disponible.",
+    seasons,
+    episodes,
+    providers,
+    nextAir: normalizeAirEpisode(data.next_episode_to_air)?.airDate || null,
+    nextAirEpisode: normalizeAirEpisode(data.next_episode_to_air)
+  };
+}
+
+function normalizeAirEpisode(episode) {
+  if (!episode?.air_date) {
+    return null;
+  }
+  return {
+    airDate: episode.air_date,
+    season: episode.season_number || null,
+    episode: episode.episode_number || null,
+    title: chooseEpisodeTitle("", episode.name, episode.season_number || 0, episode.episode_number || 0),
+    overview: episode.overview || "",
+    still: imageUrl(episode.still_path, "w300")
+  };
+}
+
+function parseNextAir(value) {
+  if (!value || typeof value !== "string" || !value.trim().startsWith("{")) {
+    return null;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+async function getWatchProviders(mediaType, tmdbId) {
+  if (!hasTmdbAuth()) {
+    return null;
+  }
+
+  try {
+    const data = await tmdb(`/${mediaType}/${tmdbId}/watch/providers`);
+    const region = data.results?.FR || data.results?.US || null;
+    if (!region) {
+      return null;
+    }
+    return {
+      link: region.link || "",
+      flatrate: normalizeProviders(region.flatrate),
+      rent: normalizeProviders(region.rent),
+      buy: normalizeProviders(region.buy)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProviders(providers = []) {
+  return providers.map((provider) => ({
+    id: provider.provider_id,
+    name: provider.provider_name,
+    logo: imageUrl(provider.logo_path, "w92")
+  }));
+}
+
+async function getEpisodeMap(tmdbId, seasons) {
+  const requests = seasons.flatMap((_, index) => [
+    { season: index + 1, language: "fr-FR" },
+    { season: index + 1, language: "en-US" }
+  ]);
+  const results = await Promise.allSettled(
+    requests.map((request) => tmdb(`/tv/${tmdbId}/season/${request.season}`, { language: request.language }))
+  );
+
+  return results.reduce((acc, result, index) => {
+    if (result.status !== "fulfilled") {
+      return acc;
+    }
+
+    const request = requests[index];
+    result.value.episodes.forEach((episode) => {
+      const key = `${request.season}:${episode.episode_number}`;
+      const existing = acc[key] || {};
+      const title = chooseEpisodeTitle(existing.title, episode.name, request.season, episode.episode_number);
+      acc[key] = {
+        title,
+        still: existing.still || imageUrl(episode.still_path, "w300"),
+        airDate: episode.air_date || null
+      };
+    });
+    return acc;
+  }, {});
+}
+
+function shouldUseStoredMedia(stored, mediaType) {
+  if (!stored) {
+    return false;
+  }
+  if (!hasTmdbAuth()) {
+    return true;
+  }
+  if (!stored.providers) {
+    return false;
+  }
+  if (mediaType === "tv" && stored.nextAir && !stored.nextAirEpisode) {
+    return false;
+  }
+  if (mediaType !== "tv") {
+    return true;
+  }
+  return hasUsefulEpisodeData(stored);
+}
+
+function hasUsefulEpisodeData(media) {
+  const episodes = Object.values(media.episodes || {});
+  if (!episodes.length) {
+    return false;
+  }
+  const realTitles = episodes.filter((episode) => !isGenericEpisodeTitle(episode.title)).length;
+  const uniqueStills = new Set(episodes.map((episode) => episode.still).filter(Boolean));
+  return realTitles >= Math.min(3, episodes.length) || uniqueStills.size > 1;
+}
+
+function chooseEpisodeTitle(current, incoming, season, episode) {
+  const fallback = `S${season}E${episode}`;
+  if (current && !isGenericEpisodeTitle(current)) {
+    return current;
+  }
+  if (incoming && !isGenericEpisodeTitle(incoming)) {
+    return incoming;
+  }
+  return current || incoming || fallback;
+}
+
+function isGenericEpisodeTitle(title) {
+  if (!title) {
+    return true;
+  }
+  return /^episode\s*\d*$/i.test(title.trim());
+}
+
+function normalizeFallback(item) {
+  const detail = item ? fallbackDetails[dbKey(item.mediaType, item.tmdbId)] : null;
+  return detail || {
+    ...item,
+    genres: [],
+    rating: null,
+    poster: "",
+    backdrop: "",
+    synopsis: "Configure TMDB pour charger les details complets.",
+    seasons: item?.mediaType === "movie" ? [1] : [1],
+    nextAir: null
+  };
+}
+
+function imageUrl(pathname, size) {
+  return pathname ? `${IMAGE_BASE}${size}${pathname}` : "";
+}
+
+function isSupportedMedia(item) {
+  return ["tv", "movie"].includes(item.media_type) && !item.adult;
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+function serveStatic(res, pathname) {
+  const safePath = pathname === "/" ? "/index.html" : pathname;
+  const filePath = path.normalize(path.join(ROOT, safePath));
+  if (!filePath.startsWith(ROOT)) {
+    sendText(res, 403, "Forbidden");
+    return;
+  }
+
+  fs.readFile(filePath, (error, content) => {
+    if (error) {
+      sendText(res, 404, "Not found");
+      return;
+    }
+    res.writeHead(200, { "content-type": contentType(filePath) });
+    res.end(content);
+  });
+}
+
+function contentType(filePath) {
+  const extension = path.extname(filePath);
+  return {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
+    ".svg": "image/svg+xml"
+  }[extension] || "application/octet-stream";
+}
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(payload));
+}
+
+function sendText(res, status, text) {
+  res.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  res.end(text);
+}
+
+function normalizeServerError(error) {
+  if (error.message.includes("PGRST205") || error.message.includes("Could not find the table")) {
+    return {
+      error: "Schema Supabase manquant",
+      detail: "Les tables Supabase ne sont pas a jour. Execute le fichier supabase/schema.sql dans le SQL Editor Supabase, puis relance npm start."
+    };
+  }
+
+  if (error.message.includes("PGRST204") || error.message.includes("Could not find")) {
+    return {
+      error: "Schema Supabase a mettre a jour",
+      detail: "La colonne ou table demandee n'existe pas encore. Execute le fichier supabase/schema.sql dans Supabase pour activer amis, listes et coups de coeur."
+    };
+  }
+
+  return { error: "Erreur serveur", detail: error.message };
+}
+
+function ensureLocalDb() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(DB_PATH)) {
+    const now = new Date().toISOString();
+    const media = {};
+    const library = {};
+    ["tv:100088", "tv:1396", "tv:70523"].forEach((key) => {
+      const item = fallbackDetails[key];
+      media[key] = item;
+      library[key] = {
+        userId: LOCAL_USER_ID,
+        mediaType: item.mediaType,
+        tmdbId: item.tmdbId,
+        status: "watching",
+        watched: { season: 1, episode: 0 },
+        favorite: false,
+        addedAt: now,
+        updatedAt: now
+      };
+    });
+    fs.writeFileSync(
+      DB_PATH,
+      JSON.stringify({
+        users: [{ id: LOCAL_USER_ID, name: LOCAL_USER_NAME, createdAt: now }],
+        media,
+        library,
+        friendships: {},
+        lists: {},
+        listItems: {}
+      }, null, 2)
+    );
+  }
+}
+
+function dbKey(mediaType, tmdbId) {
+  return `${mediaType}:${tmdbId}`;
+}
+
+function hasTmdbAuth() {
+  return Boolean(process.env.TMDB_READ_ACCESS_TOKEN || process.env.TMDB_API_KEY);
+}
+
+function hasSupabaseConfig() {
+  return Boolean(process.env.SUPABASE_URL && getSupabaseKey());
+}
+
+function getSupabaseKey() {
+  return (
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_ANON_KEY
+  );
+}
+
+function loadEnv() {
+  const envPath = path.join(__dirname, ".env");
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  fs.readFileSync(envPath, "utf8")
+    .split(/\r?\n/)
+    .forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        return;
+      }
+      const index = trimmed.indexOf("=");
+      if (index === -1) {
+        return;
+      }
+      const key = trimmed.slice(0, index).trim();
+      const value = trimmed.slice(index + 1).trim();
+      process.env[key] = process.env[key] || value;
+    });
+}

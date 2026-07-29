@@ -1,0 +1,13 @@
+{
+  "name": "suivi-tv",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check app.js && node --check server.js",
+    "health": "node -e \"fetch('http://localhost:4173/api/health').then(r=>r.json()).then(console.log)\""
+  },
+  "dependencies": {
+    "@supabase/server": "^1.4.1"
+  }
+}
