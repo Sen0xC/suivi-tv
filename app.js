@@ -1,4 +1,25 @@
 const api = {
+  async register(email, password, name) {
+    return request("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password, name })
+    });
+  },
+  async login(email, password) {
+    return request("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password })
+    });
+  },
+  async logout() {
+    return request("/api/auth/logout", { method: "POST" });
+  },
+  async updateProfile(patch) {
+    return request("/api/profile", {
+      method: "PATCH",
+      body: JSON.stringify(patch)
+    });
+  },
   async me() {
     return request("/api/me");
   },
@@ -61,6 +82,8 @@ const dialog = document.querySelector("#series-dialog");
 const dialogContent = document.querySelector("#dialog-content");
 
 const state = {
+  authToken: localStorage.getItem("suivi_session_token") || "",
+  authMode: "login",
   route: "home",
   user: null,
   library: [],
@@ -84,7 +107,10 @@ async function init() {
 
 async function request(url, options = {}) {
   const response = await fetch(url, {
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(state.authToken ? { "x-session-token": state.authToken } : {})
+    },
     ...options
   });
   const data = await response.json();
@@ -97,6 +123,10 @@ async function request(url, options = {}) {
 async function refreshData() {
   state.loading = true;
   state.error = "";
+  if (!state.authToken) {
+    state.loading = false;
+    return;
+  }
   try {
     const [me, trending, recommendations] = await Promise.all([api.me(), api.trending(), api.recommendations()]);
     state.user = me.user;
@@ -105,6 +135,10 @@ async function refreshData() {
     state.explore = mergeExplore(trending.items, me.library);
     state.recommendations = mergeExplore(recommendations.items, me.library);
   } catch (error) {
+    if (error.message === "Connexion requise") {
+      localStorage.removeItem("suivi_session_token");
+      state.authToken = "";
+    }
     state.error = error.message;
   } finally {
     state.loading = false;
@@ -143,6 +177,11 @@ function render() {
 
   if (state.loading) {
     app.append(appSkeleton());
+    return;
+  }
+
+  if (!state.authToken) {
+    app.append(renderAuth());
     return;
   }
 
@@ -185,6 +224,67 @@ function renderHome() {
   grid.append(sectionList("A commencer", planned.slice(0, 4), false));
   wrap.append(grid);
   wrap.append(upcomingPanel());
+  return wrap;
+}
+
+function renderAuth() {
+  const wrap = el("section", "auth-view");
+  const panel = el("section", "auth-card");
+  panel.append(el("div", "eyebrow", "Suivi TV"));
+  panel.append(el("h1", "title", state.authMode === "login" ? "Connexion" : "Creer un compte"));
+  panel.append(el("p", "subtitle", "Connecte-toi pour sauvegarder ton suivi, tes listes, tes coups de coeur et tes amis."));
+
+  const form = el("form", "auth-form");
+  const name = document.createElement("input");
+  name.placeholder = "Nom affiche";
+  name.autocomplete = "name";
+  name.hidden = state.authMode === "login";
+  const email = document.createElement("input");
+  email.type = "email";
+  email.placeholder = "Email";
+  email.autocomplete = "email";
+  email.required = true;
+  const password = document.createElement("input");
+  password.type = "password";
+  password.placeholder = "Mot de passe";
+  password.autocomplete = state.authMode === "login" ? "current-password" : "new-password";
+  password.required = true;
+  password.minLength = 8;
+  const submit = el("button", "primary-button", state.authMode === "login" ? "Se connecter" : "Creer le compte");
+  submit.type = "submit";
+  form.append(name, email, password, submit);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const result = state.authMode === "login"
+        ? await api.login(email.value, password.value)
+        : await api.register(email.value, password.value, name.value);
+      state.authToken = result.token;
+      localStorage.setItem("suivi_session_token", result.token);
+      state.user = result.user;
+      state.error = "";
+      await refreshData();
+      render();
+    } catch (error) {
+      state.error = error.message;
+      render();
+    }
+  });
+  panel.append(form);
+
+  if (state.error) {
+    panel.append(el("p", "auth-error", state.error));
+  }
+
+  const switchButton = el("button", "muted-link", state.authMode === "login" ? "Pas encore de compte ? Inscription" : "Deja un compte ? Connexion");
+  switchButton.type = "button";
+  switchButton.addEventListener("click", () => {
+    state.authMode = state.authMode === "login" ? "register" : "login";
+    state.error = "";
+    render();
+  });
+  panel.append(switchButton);
+  wrap.append(panel);
   return wrap;
 }
 
@@ -306,6 +406,7 @@ function renderCalendar() {
 function renderProfile() {
   const wrap = el("section", "stagger");
   wrap.append(topbar("Profil", "Ton historique, tes habitudes et tes priorites de visionnage."));
+  wrap.append(profileHeaderPanel());
 
   const watched = state.library.reduce((total, show) => total + watchedCount(show), 0);
   const finished = state.library.filter((show) => show.user.status === "finished").length;
@@ -315,25 +416,27 @@ function renderProfile() {
   const active = libraryByStatus("watching").length;
   const planned = libraryByStatus("planned").length;
 
-  const stats = el("section", "stats-grid");
-  [
-    [state.library.length, "Titres suivis"],
-    [watched, "Episodes / films vus"],
-    [`${hours}h`, "Temps estime"],
-    [`${completion}%`, "Liste terminee"]
-  ].forEach(([value, label]) => {
-    const card = el("article", "stat-card");
-    card.append(el("strong", "", String(value)), el("span", "", label));
-    stats.append(card);
-  });
-  wrap.append(stats);
+  if (state.user?.settings?.showStats !== false) {
+    const stats = el("section", "stats-grid");
+    [
+      [state.library.length, "Titres suivis"],
+      [watched, "Episodes / films vus"],
+      [`${hours}h`, "Temps estime"],
+      [`${completion}%`, "Liste terminee"]
+    ].forEach(([value, label]) => {
+      const card = el("article", "stat-card");
+      card.append(el("strong", "", String(value)), el("span", "", label));
+      stats.append(card);
+    });
+    wrap.append(stats);
 
-  const summary = el("section", "profile-grid");
-  summary.append(profileInsight("Genre dominant", favoriteGenre, "Base sur les titres de ta bibliotheque."));
-  summary.append(profileInsight("En cours", String(active), "Titres ouverts a reprendre."));
-  summary.append(profileInsight("A commencer", String(planned), "Titres ajoutes mais pas encore lances."));
-  summary.append(profileInsight("Rythme", `${Math.max(1, Math.round(watched / Math.max(state.library.length, 1)))} vus/titre`, "Moyenne de progression actuelle."));
-  wrap.append(summary);
+    const summary = el("section", "profile-grid");
+    summary.append(profileInsight("Genre dominant", favoriteGenre, "Base sur les titres de ta bibliotheque."));
+    summary.append(profileInsight("En cours", String(active), "Titres ouverts a reprendre."));
+    summary.append(profileInsight("A commencer", String(planned), "Titres ajoutes mais pas encore lances."));
+    summary.append(profileInsight("Rythme", `${Math.max(1, Math.round(watched / Math.max(state.library.length, 1)))} vus/titre`, "Moyenne de progression actuelle."));
+    wrap.append(summary);
+  }
 
   const statusPanel = el("section", "panel");
   statusPanel.append(el("h2", "section-title", "Repartition"));
@@ -363,6 +466,127 @@ function renderProfile() {
   wrap.append(socialPanel());
   wrap.append(listsPanel());
   return wrap;
+}
+
+function profileHeaderPanel() {
+  const panel = el("section", "profile-hero-panel");
+  const avatar = el("div", "profile-avatar");
+  if (state.user?.settings?.avatar) {
+    const image = document.createElement("img");
+    image.src = state.user.settings.avatar;
+    image.alt = "";
+    avatar.append(image);
+  } else {
+    avatar.textContent = initials(state.user?.name || "Utilisateur");
+  }
+
+  const copy = el("div", "profile-public-copy");
+  copy.append(el("span", "eyebrow", "Profil public"));
+  copy.append(el("h2", "", state.user?.name || "Utilisateur"));
+  copy.append(el("p", "subtitle", state.user?.settings?.bio || "Aucune bio pour le moment."));
+  copy.append(el("small", "", `Identifiant ami : ${state.user?.id || ""}`));
+
+  const actions = el("div", "profile-actions");
+  const edit = el("button", "primary-button", "Modifier le profil");
+  edit.type = "button";
+  edit.addEventListener("click", () => openProfileEditor());
+  const logout = el("button", "ghost-button", "Se deconnecter");
+  logout.type = "button";
+  logout.addEventListener("click", async () => {
+    await api.logout();
+    localStorage.removeItem("suivi_session_token");
+    state.authToken = "";
+    state.user = null;
+    state.library = [];
+    state.social = { friends: [], lists: [] };
+    render();
+  });
+  actions.append(edit, logout);
+  panel.append(avatar, copy, actions);
+  return panel;
+}
+
+function openProfileEditor() {
+  dialogContent.innerHTML = "";
+  const panel = el("section", "profile-editor");
+  panel.append(el("h2", "section-title", "Modifier le profil"));
+  const preview = el("div", "profile-avatar profile-avatar--large");
+  let avatarValue = state.user?.settings?.avatar || "";
+  renderAvatarPreview(preview, avatarValue, state.user?.name);
+
+  const form = el("form", "profile-form");
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = "image/png,image/jpeg,image/webp";
+  const name = document.createElement("input");
+  name.placeholder = "Nom d'utilisateur";
+  name.value = state.user?.name || "";
+  name.required = true;
+  const bio = document.createElement("textarea");
+  bio.placeholder = "Bio publique";
+  bio.maxLength = 220;
+  bio.value = state.user?.settings?.bio || "";
+  const showStatsLabel = el("label", "check-line");
+  const showStats = document.createElement("input");
+  showStats.type = "checkbox";
+  showStats.checked = state.user?.settings?.showStats !== false;
+  showStatsLabel.append(showStats, el("span", "", "Afficher mes statistiques sur mon profil"));
+  const submit = el("button", "primary-button", "Enregistrer");
+  submit.type = "submit";
+
+  file.addEventListener("change", async () => {
+    const selected = file.files?.[0];
+    if (!selected) {
+      return;
+    }
+    avatarValue = await imageFileToDataUrl(selected);
+    renderAvatarPreview(preview, avatarValue, name.value);
+  });
+
+  form.append(preview, file, name, bio, showStatsLabel, submit);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const result = await api.updateProfile({
+      name: name.value,
+      settings: {
+        bio: bio.value,
+        avatar: avatarValue,
+        showStats: showStats.checked
+      }
+    });
+    state.user = result.user;
+    await refreshData();
+    dialog.close();
+    render();
+  });
+  panel.append(form);
+  dialogContent.append(panel);
+  dialog.showModal();
+}
+
+function renderAvatarPreview(container, value, name) {
+  container.innerHTML = "";
+  if (value) {
+    const image = document.createElement("img");
+    image.src = value;
+    image.alt = "";
+    container.append(image);
+  } else {
+    container.textContent = initials(name || "Utilisateur");
+  }
+}
+
+function imageFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (file.size > 250000) {
+      reject(new Error("Image trop lourde. Choisis une image de moins de 250 Ko."));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Image illisible"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function profileInsight(label, value, helper) {
@@ -1123,6 +1347,16 @@ function mediaKey(item) {
 
 function mediaLabel(item) {
   return item.mediaType === "movie" ? "Film" : "Serie";
+}
+
+function initials(value) {
+  return String(value || "U")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
 }
 
 function firstGenre(show) {

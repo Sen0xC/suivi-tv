@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { URL } = require("url");
 
 loadEnv();
@@ -13,6 +14,7 @@ const TMDB_BASE = "https://api.themoviedb.org/3";
 const IMAGE_BASE = "https://image.tmdb.org/t/p/";
 const LOCAL_USER_ID = process.env.APP_USER_ID || "local-user";
 const LOCAL_USER_NAME = process.env.APP_USER_NAME || "Alex";
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 const fallbackCatalog = [
   { mediaType: "tv", tmdbId: 100088, title: "The Last of Us", year: 2023 },
@@ -82,7 +84,7 @@ const server = http.createServer(async (req, res) => {
 
     serveStatic(res, url.pathname);
   } catch (error) {
-    sendJson(res, 500, normalizeServerError(error));
+    sendJson(res, error.statusCode || 500, normalizeServerError(error));
   }
 });
 
@@ -109,11 +111,46 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/api/auth/register") {
+    const body = await readBody(req);
+    const session = await registerAccount(body.email, body.password, body.name);
+    sendJson(res, 201, session);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    const body = await readBody(req);
+    const session = await loginAccount(body.email, body.password);
+    sendJson(res, 200, session);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/session") {
+    const user = await getSessionUser(req);
+    sendJson(res, 200, { user });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    await logoutSession(req);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "PATCH" && url.pathname === "/api/profile") {
+    const sessionUser = await requireSession(req);
+    const body = await readBody(req);
+    const user = await updateProfile(sessionUser.id, body);
+    sendJson(res, 200, { user });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/me") {
-    const db = await readDb();
-    await ensureUser(db);
+    const sessionUser = await requireSession(req);
+    const db = await readDb(sessionUser.id);
+    await ensureUser(db, sessionUser);
     await refreshUpcomingAirData(db);
-    sendJson(res, 200, { user: db.users[0], library: enrichLibrary(db), social: enrichSocial(db) });
+    sendJson(res, 200, { user: sessionUser, library: enrichLibrary(db), social: enrichSocial(db, sessionUser.id) });
     return;
   }
 
@@ -124,7 +161,8 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/recommendations") {
-    const db = await readDb();
+    const sessionUser = await requireSession(req);
+    const db = await readDb(sessionUser.id);
     const items = await getRecommendations(db);
     sendJson(res, 200, { items });
     return;
@@ -145,45 +183,51 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/library") {
+    const sessionUser = await requireSession(req);
     const body = await readBody(req);
-    const item = await addLibraryItem(body.mediaType, Number(body.tmdbId), body.status || "planned");
+    const item = await addLibraryItem(sessionUser.id, body.mediaType, Number(body.tmdbId), body.status || "planned");
     sendJson(res, 201, { item });
     return;
   }
 
   const libraryMatch = url.pathname.match(/^\/api\/library\/(tv|movie)\/(\d+)$/);
   if (libraryMatch && req.method === "PATCH") {
+    const sessionUser = await requireSession(req);
     const body = await readBody(req);
-    const item = await updateLibraryItem(libraryMatch[1], Number(libraryMatch[2]), body);
+    const item = await updateLibraryItem(sessionUser.id, libraryMatch[1], Number(libraryMatch[2]), body);
     sendJson(res, 200, { item });
     return;
   }
 
   const seenMatch = url.pathname.match(/^\/api\/library\/(tv|movie)\/(\d+)\/seen$/);
   if (seenMatch && req.method === "POST") {
-    const item = await markNextSeen(seenMatch[1], Number(seenMatch[2]));
+    const sessionUser = await requireSession(req);
+    const item = await markNextSeen(sessionUser.id, seenMatch[1], Number(seenMatch[2]));
     sendJson(res, 200, { item });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/friends") {
+    const sessionUser = await requireSession(req);
     const body = await readBody(req);
-    const social = await addFriend(String(body.friendId || "").trim(), String(body.name || "").trim());
+    const social = await addFriend(sessionUser.id, String(body.friendId || "").trim(), String(body.name || "").trim());
     sendJson(res, 201, { social });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/lists") {
+    const sessionUser = await requireSession(req);
     const body = await readBody(req);
-    const list = await createList(String(body.name || "").trim(), String(body.description || "").trim());
+    const list = await createList(sessionUser.id, String(body.name || "").trim(), String(body.description || "").trim());
     sendJson(res, 201, { list });
     return;
   }
 
   const listItemMatch = url.pathname.match(/^\/api\/lists\/([^/]+)\/items$/);
   if (req.method === "POST" && listItemMatch) {
+    const sessionUser = await requireSession(req);
     const body = await readBody(req);
-    const list = await addListItem(listItemMatch[1], body.mediaType, Number(body.tmdbId), String(body.note || "").trim());
+    const list = await addListItem(sessionUser.id, listItemMatch[1], body.mediaType, Number(body.tmdbId), String(body.note || "").trim());
     sendJson(res, 201, { list });
     return;
   }
@@ -255,6 +299,215 @@ async function getRecommendations(db) {
   return items.slice(0, 12);
 }
 
+async function registerAccount(email, password, name) {
+  ensureAuthStorage();
+  const normalizedEmail = normalizeEmail(email);
+  validatePassword(password);
+  const existing = await findUserByEmail(normalizedEmail);
+  if (existing) {
+    throw new Error("Un compte existe deja avec cet email");
+  }
+
+  const user = {
+    id: `user-${crypto.randomUUID()}`,
+    email: normalizedEmail,
+    name: String(name || normalizedEmail.split("@")[0]).trim(),
+    passwordHash: hashPassword(password),
+    settings: defaultSettings(),
+    createdAt: new Date().toISOString()
+  };
+
+  await supabaseRequest("/suivi_users?on_conflict=id", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates" },
+    body: JSON.stringify([toUserRow(user)])
+  });
+
+  return createSession(user);
+}
+
+async function loginAccount(email, password) {
+  ensureAuthStorage();
+  const user = await findUserByEmail(normalizeEmail(email));
+  if (!user || !verifyPassword(password, user.passwordHash)) {
+    throw new Error("Email ou mot de passe incorrect");
+  }
+  return createSession(user);
+}
+
+async function updateProfile(userId, patch) {
+  const users = await supabaseRequest("/suivi_users?select=*&id=eq." + encodeURIComponent(userId));
+  const current = users[0] ? fromUserRow(users[0]) : null;
+  if (!current) {
+    throw new Error("Utilisateur introuvable");
+  }
+
+  const settings = sanitizeProfileSettings({
+    ...defaultSettings(),
+    ...(current.settings || {}),
+    ...(patch.settings || {})
+  });
+  const next = {
+    ...current,
+    name: sanitizePublicText(patch.name || current.name, 40) || current.name,
+    settings
+  };
+
+  await supabaseRequest("/suivi_users?on_conflict=id", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates" },
+    body: JSON.stringify([toUserRow(next)])
+  });
+
+  return publicUser(next);
+}
+
+async function createSession(user) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const session = {
+    token,
+    userId: user.id,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString()
+  };
+
+  await supabaseRequest("/suivi_sessions?on_conflict=token", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates" },
+    body: JSON.stringify([toSessionRow(session)])
+  });
+
+  return { token, user: publicUser(user) };
+}
+
+async function getSessionUser(req) {
+  ensureAuthStorage();
+  const token = getAuthToken(req);
+  if (!token) {
+    return null;
+  }
+
+  const rows = await supabaseOptional("/suivi_sessions?select=*&token=eq." + encodeURIComponent(token));
+  const session = rows[0] ? fromSessionRow(rows[0]) : null;
+  if (!session || new Date(session.expiresAt).getTime() < Date.now()) {
+    return null;
+  }
+
+  const users = await supabaseRequest("/suivi_users?select=*&id=eq." + encodeURIComponent(session.userId));
+  return users[0] ? publicUser(fromUserRow(users[0])) : null;
+}
+
+async function requireSession(req) {
+  const user = await getSessionUser(req);
+  if (!user) {
+    const error = new Error("Session expiree ou absente");
+    error.statusCode = 401;
+    throw error;
+  }
+  return user;
+}
+
+async function logoutSession(req) {
+  ensureAuthStorage();
+  const token = getAuthToken(req);
+  if (!token) {
+    return;
+  }
+  await supabaseOptional("/suivi_sessions?token=eq." + encodeURIComponent(token), { method: "DELETE" });
+}
+
+async function findUserByEmail(email) {
+  const users = await supabaseRequest("/suivi_users?select=*&email=eq." + encodeURIComponent(email));
+  return users[0] ? fromUserRow(users[0]) : null;
+}
+
+function normalizeEmail(email) {
+  const value = String(email || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+    throw new Error("Email invalide");
+  }
+  return value;
+}
+
+function validatePassword(password) {
+  if (String(password || "").length < 8) {
+    throw new Error("Le mot de passe doit faire au moins 8 caracteres");
+  }
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.pbkdf2Sync(String(password), salt, 120000, 32, "sha256").toString("hex");
+  return `pbkdf2$${salt}$${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  const [, salt, hash] = String(stored || "").split("$");
+  if (!salt || !hash) {
+    return false;
+  }
+  const current = crypto.pbkdf2Sync(String(password), salt, 120000, 32, "sha256").toString("hex");
+  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(current, "hex"));
+}
+
+function getAuthToken(req) {
+  return req.headers["x-session-token"] || "";
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    settings: user.settings || defaultSettings(),
+    createdAt: user.createdAt
+  };
+}
+
+function defaultSettings() {
+  return {
+    locale: "fr-FR",
+    region: "FR",
+    adultContent: false,
+    notifications: false,
+    bio: "",
+    avatar: "",
+    showStats: true
+  };
+}
+
+function sanitizeProfileSettings(settings) {
+  return {
+    locale: "fr-FR",
+    region: sanitizePublicText(settings.region || "FR", 8) || "FR",
+    adultContent: Boolean(settings.adultContent),
+    notifications: Boolean(settings.notifications),
+    bio: sanitizePublicText(settings.bio || "", 220),
+    avatar: sanitizeAvatar(settings.avatar || ""),
+    showStats: settings.showStats !== false
+  };
+}
+
+function sanitizePublicText(value, maxLength) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function sanitizeAvatar(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (!text.startsWith("data:image/")) {
+    return "";
+  }
+  return text.length <= 350000 ? text : "";
+}
+
+function ensureAuthStorage() {
+  if (!hasSupabaseConfig()) {
+    throw new Error("Supabase est requis pour les comptes utilisateurs");
+  }
+}
+
 async function getMediaDetails(mediaType, tmdbId) {
   const key = dbKey(mediaType, tmdbId);
   const db = await readDb();
@@ -272,15 +525,14 @@ async function getMediaDetails(mediaType, tmdbId) {
   return normalized;
 }
 
-async function addLibraryItem(mediaType, tmdbId, status) {
-  const db = await readDb();
-  await ensureUser(db);
+async function addLibraryItem(userId, mediaType, tmdbId, status) {
+  const db = await readDb(userId);
   const media = await getMediaDetails(mediaType, tmdbId);
   const key = dbKey(mediaType, tmdbId);
 
   db.media[key] = media;
   db.library[key] = db.library[key] || {
-    userId: LOCAL_USER_ID,
+    userId,
     mediaType,
     tmdbId,
     status,
@@ -295,8 +547,8 @@ async function addLibraryItem(mediaType, tmdbId, status) {
   return enrichItem(db.library[key], media);
 }
 
-async function updateLibraryItem(mediaType, tmdbId, patch) {
-  const db = await readDb();
+async function updateLibraryItem(userId, mediaType, tmdbId, patch) {
+  const db = await readDb(userId);
   const key = dbKey(mediaType, tmdbId);
   const item = db.library[key];
   if (!item) {
@@ -317,8 +569,8 @@ async function updateLibraryItem(mediaType, tmdbId, patch) {
   return enrichItem(item, db.media[key]);
 }
 
-async function markNextSeen(mediaType, tmdbId) {
-  const db = await readDb();
+async function markNextSeen(userId, mediaType, tmdbId) {
+  const db = await readDb(userId);
   const key = dbKey(mediaType, tmdbId);
   const item = db.library[key];
   const media = db.media[key];
@@ -365,10 +617,10 @@ function enrichItem(item, media) {
   };
 }
 
-function enrichSocial(db) {
+function enrichSocial(db, userId = LOCAL_USER_ID) {
   const usersById = Object.fromEntries(db.users.map((user) => [user.id, user]));
   const lists = Object.values(db.lists || {})
-    .filter((list) => list.userId === LOCAL_USER_ID)
+    .filter((list) => list.userId === userId)
     .map((list) => ({
       ...list,
       items: Object.values(db.listItems || {})
@@ -378,7 +630,7 @@ function enrichSocial(db) {
 
   return {
     friends: Object.values(db.friendships || {})
-      .filter((friendship) => friendship.userId === LOCAL_USER_ID)
+      .filter((friendship) => friendship.userId === userId)
       .map((friendship) => ({
         ...friendship,
         friend: usersById[friendship.friendId] || { id: friendship.friendId, name: friendship.friendId }
@@ -442,34 +694,32 @@ async function writeMediaCache(db) {
   }
 }
 
-async function addFriend(friendId, name) {
+async function addFriend(userId, friendId, name) {
   if (!friendId) {
     throw new Error("Identifiant ami manquant");
   }
-  if (friendId === LOCAL_USER_ID) {
+  if (friendId === userId) {
     throw new Error("Tu ne peux pas t'ajouter toi-meme");
   }
 
-  const db = await readDb();
-  await ensureUser(db);
+  const db = await readDb(userId);
   db.users.push(...(!db.users.some((user) => user.id === friendId) ? [{ id: friendId, name: name || friendId, createdAt: new Date().toISOString() }] : []));
   db.friendships = db.friendships || {};
-  db.friendships[`${LOCAL_USER_ID}:${friendId}`] = { userId: LOCAL_USER_ID, friendId, createdAt: new Date().toISOString() };
+  db.friendships[`${userId}:${friendId}`] = { userId, friendId, createdAt: new Date().toISOString() };
   await writeDb(db);
-  return enrichSocial(db);
+  return enrichSocial(db, userId);
 }
 
-async function createList(name, description) {
+async function createList(userId, name, description) {
   if (!name) {
     throw new Error("Nom de liste manquant");
   }
-  const db = await readDb();
-  await ensureUser(db);
+  const db = await readDb(userId);
   db.lists = db.lists || {};
   const id = `list-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   db.lists[id] = {
     id,
-    userId: LOCAL_USER_ID,
+    userId,
     name,
     description,
     isPublic: true,
@@ -477,13 +727,13 @@ async function createList(name, description) {
     updatedAt: new Date().toISOString()
   };
   await writeDb(db);
-  return enrichSocial(db).lists.find((list) => list.id === id);
+  return enrichSocial(db, userId).lists.find((list) => list.id === id);
 }
 
-async function addListItem(listId, mediaType, tmdbId, note) {
-  const db = await readDb();
+async function addListItem(userId, listId, mediaType, tmdbId, note) {
+  const db = await readDb(userId);
   const list = db.lists?.[listId];
-  if (!list || list.userId !== LOCAL_USER_ID) {
+  if (!list || list.userId !== userId) {
     throw new Error("Liste introuvable");
   }
   const media = await getMediaDetails(mediaType, tmdbId);
@@ -492,7 +742,7 @@ async function addListItem(listId, mediaType, tmdbId, note) {
   db.listItems[`${listId}:${mediaType}:${tmdbId}`] = { listId, mediaType, tmdbId, note, addedAt: new Date().toISOString() };
   list.updatedAt = new Date().toISOString();
   await writeDb(db);
-  return enrichSocial(db).lists.find((entry) => entry.id === listId);
+  return enrichSocial(db, userId).lists.find((entry) => entry.id === listId);
 }
 
 function nextEpisode(media, watched) {
@@ -506,9 +756,9 @@ function nextEpisode(media, watched) {
   return null;
 }
 
-async function readDb() {
+async function readDb(userId = LOCAL_USER_ID) {
   if (hasSupabaseConfig()) {
-    return readSupabaseDb();
+    return readSupabaseDb(userId);
   }
   return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
 }
@@ -521,13 +771,13 @@ async function writeDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 }
 
-async function readSupabaseDb() {
+async function readSupabaseDb(userId = LOCAL_USER_ID) {
   const [users, mediaRows, libraryRows, friendshipRows, listRows, listItemRows] = await Promise.all([
     supabaseRequest("/suivi_users?select=*"),
     supabaseRequest("/suivi_media?select=*"),
-    supabaseRequest("/suivi_library?select=*&user_id=eq." + encodeURIComponent(LOCAL_USER_ID)),
-    supabaseOptional("/suivi_friendships?select=*&user_id=eq." + encodeURIComponent(LOCAL_USER_ID)),
-    supabaseOptional("/suivi_lists?select=*&user_id=eq." + encodeURIComponent(LOCAL_USER_ID)),
+    supabaseRequest("/suivi_library?select=*&user_id=eq." + encodeURIComponent(userId)),
+    supabaseOptional("/suivi_friendships?select=*&user_id=eq." + encodeURIComponent(userId)),
+    supabaseOptional("/suivi_lists?select=*&user_id=eq." + encodeURIComponent(userId)),
     supabaseOptional("/suivi_list_items?select=*")
   ]);
 
@@ -628,11 +878,13 @@ async function writeSupabaseDb(db) {
   }
 }
 
-async function ensureUser(db) {
+async function ensureUser(db, user = null) {
   if (!db.users.length) {
     db.users.push({
-      id: LOCAL_USER_ID,
-      name: LOCAL_USER_NAME,
+      id: user?.id || LOCAL_USER_ID,
+      email: user?.email || "",
+      name: user?.name || LOCAL_USER_NAME,
+      settings: user?.settings || defaultSettings(),
       createdAt: new Date().toISOString()
     });
   }
@@ -673,9 +925,9 @@ async function supabaseRequest(pathname, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
-async function supabaseOptional(pathname) {
+async function supabaseOptional(pathname, options = {}) {
   try {
-    return await supabaseRequest(pathname);
+    return await supabaseRequest(pathname, options);
   } catch (error) {
     if (error.message.includes("PGRST205") || error.message.includes("Could not find the table")) {
       return [];
@@ -687,7 +939,10 @@ async function supabaseOptional(pathname) {
 function toUserRow(user) {
   return {
     id: user.id,
+    email: user.email || null,
     name: user.name,
+    password_hash: user.passwordHash || null,
+    settings: user.settings || defaultSettings(),
     created_at: user.createdAt
   };
 }
@@ -695,7 +950,10 @@ function toUserRow(user) {
 function fromUserRow(row) {
   return {
     id: row.id,
+    email: row.email || "",
     name: row.name,
+    passwordHash: row.password_hash || "",
+    settings: row.settings || defaultSettings(),
     createdAt: row.created_at
   };
 }
@@ -816,6 +1074,24 @@ function fromListItemRow(row) {
     tmdbId: row.tmdb_id,
     note: row.note || "",
     addedAt: row.added_at
+  };
+}
+
+function toSessionRow(session) {
+  return {
+    token: session.token,
+    user_id: session.userId,
+    created_at: session.createdAt,
+    expires_at: session.expiresAt
+  };
+}
+
+function fromSessionRow(row) {
+  return {
+    token: row.token,
+    userId: row.user_id,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at
   };
 }
 
@@ -1090,6 +1366,10 @@ function sendText(res, status, text) {
 }
 
 function normalizeServerError(error) {
+  if (error.statusCode === 401) {
+    return { error: "Connexion requise", detail: error.message };
+  }
+
   if (error.message.includes("PGRST205") || error.message.includes("Could not find the table")) {
     return {
       error: "Schema Supabase manquant",

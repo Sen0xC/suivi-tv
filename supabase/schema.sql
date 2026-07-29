@@ -1,7 +1,26 @@
 create table if not exists public.suivi_users (
   id text primary key,
+  email text unique,
   name text not null,
+  password_hash text,
+  settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"bio":"","avatar":"","showStats":true}'::jsonb,
   created_at timestamptz not null default now()
+);
+
+alter table public.suivi_users
+  add column if not exists email text,
+  add column if not exists password_hash text,
+  add column if not exists settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"bio":"","avatar":"","showStats":true}'::jsonb;
+
+create unique index if not exists suivi_users_email_unique
+  on public.suivi_users(email)
+  where email is not null;
+
+create table if not exists public.suivi_sessions (
+  token text primary key,
+  user_id text not null references public.suivi_users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null
 );
 
 create table if not exists public.suivi_media (
@@ -64,14 +83,29 @@ create table if not exists public.suivi_list_items (
 );
 
 alter table public.suivi_users enable row level security;
+alter table public.suivi_sessions enable row level security;
 alter table public.suivi_media enable row level security;
 alter table public.suivi_library enable row level security;
 alter table public.suivi_friendships enable row level security;
 alter table public.suivi_lists enable row level security;
 alter table public.suivi_list_items enable row level security;
 
+drop policy if exists "server can manage suivi users" on public.suivi_users;
+drop policy if exists "server can manage suivi sessions" on public.suivi_sessions;
+drop policy if exists "server can manage suivi media" on public.suivi_media;
+drop policy if exists "server can manage suivi library" on public.suivi_library;
+drop policy if exists "server can manage suivi friendships" on public.suivi_friendships;
+drop policy if exists "server can manage suivi lists" on public.suivi_lists;
+drop policy if exists "server can manage suivi list items" on public.suivi_list_items;
+
 create policy "server can manage suivi users"
   on public.suivi_users
+  for all
+  using (true)
+  with check (true);
+
+create policy "server can manage suivi sessions"
+  on public.suivi_sessions
   for all
   using (true)
   with check (true);
