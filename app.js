@@ -115,7 +115,7 @@ async function request(url, options = {}) {
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error || "Erreur API");
+    throw new Error(data.detail || data.error || "Erreur API");
   }
   return data;
 }
@@ -347,7 +347,7 @@ function scheduleSuggestions(container) {
   window.clearTimeout(state.searchTimer);
   state.searchTimer = window.setTimeout(async () => {
     const term = state.query.trim();
-    if (term.length < 2) {
+    if (term.length < 3) {
       state.suggestions = [];
       renderSuggestions(container);
       return;
@@ -356,7 +356,11 @@ function scheduleSuggestions(container) {
     try {
       const data = await api.search(term);
       state.suggestions = mergeExplore(data.items.slice(0, 8), state.library);
+      state.explore = mergeExplore(data.items, state.library);
       renderSuggestions(container);
+      const results = posterGrid("Resultats", state.explore);
+      results.classList.add("explore-results");
+      document.querySelector(".explore-results")?.replaceWith(results);
     } catch {
       state.suggestions = [];
       renderSuggestions(container);
@@ -390,6 +394,7 @@ function renderSuggestions(container) {
 function renderCalendar() {
   const wrap = el("section", "stagger");
   wrap.append(topbar("Calendrier", "Sorties connues pour les series suivies."));
+  wrap.append(calendarMonthPanel());
   const panel = el("section", "panel");
   panel.append(el("h2", "section-title", "A venir"));
   const list = el("div", "calendar-list");
@@ -403,9 +408,51 @@ function renderCalendar() {
   return wrap;
 }
 
+function calendarMonthPanel() {
+  const panel = el("section", "panel calendar-month-panel");
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const releaseDays = upcomingDatesMap();
+  const first = new Date(year, month, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  panel.append(el("h2", "section-title", today.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })));
+  const grid = el("div", "month-grid");
+  ["L", "M", "M", "J", "V", "S", "D"].forEach((day) => grid.append(el("span", "month-weekday", day)));
+  for (let index = 0; index < offset; index += 1) {
+    grid.append(el("span", "month-day is-empty"));
+  }
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const count = releaseDays.get(key) || 0;
+    const cell = el("span", `month-day${count ? " has-release" : ""}${day === today.getDate() ? " is-today" : ""}`);
+    cell.append(el("strong", "", String(day)));
+    if (count) {
+      cell.append(el("small", "", String(count)));
+    }
+    grid.append(cell);
+  }
+  panel.append(grid);
+  return panel;
+}
+
+function upcomingDatesMap() {
+  return state.library.reduce((acc, show) => {
+    const value = show.nextAirEpisode?.airDate || show.nextAir;
+    if (!value) {
+      return acc;
+    }
+    const key = value.slice(0, 10);
+    acc.set(key, (acc.get(key) || 0) + 1);
+    return acc;
+  }, new Map());
+}
+
 function renderProfile() {
   const wrap = el("section", "stagger");
-  wrap.append(topbar("Profil", "Ton historique, tes habitudes et tes priorites de visionnage."));
+  wrap.append(topbar("Profil", "Tes infos publiques et tes preferences."));
   wrap.append(profileHeaderPanel());
 
   const watched = state.library.reduce((total, show) => total + watchedCount(show), 0);
@@ -416,41 +463,18 @@ function renderProfile() {
   const active = libraryByStatus("watching").length;
   const planned = libraryByStatus("planned").length;
 
-  if (state.user?.settings?.showStats !== false) {
-    const stats = el("section", "stats-grid");
-    [
-      [state.library.length, "Titres suivis"],
-      [watched, "Episodes / films vus"],
-      [`${hours}h`, "Temps estime"],
-      [`${completion}%`, "Liste terminee"]
-    ].forEach(([value, label]) => {
-      const card = el("article", "stat-card");
-      card.append(el("strong", "", String(value)), el("span", "", label));
-      stats.append(card);
-    });
-    wrap.append(stats);
-
-    const summary = el("section", "profile-grid");
-    summary.append(profileInsight("Genre dominant", favoriteGenre, "Base sur les titres de ta bibliotheque."));
-    summary.append(profileInsight("En cours", String(active), "Titres ouverts a reprendre."));
-    summary.append(profileInsight("A commencer", String(planned), "Titres ajoutes mais pas encore lances."));
-    summary.append(profileInsight("Rythme", `${Math.max(1, Math.round(watched / Math.max(state.library.length, 1)))} vus/titre`, "Moyenne de progression actuelle."));
-    wrap.append(summary);
-  }
-
-  const statusPanel = el("section", "panel");
-  statusPanel.append(el("h2", "section-title", "Repartition"));
-  const statusList = el("div", "profile-bars");
-  Object.entries(statusLabels).forEach(([status, label]) => {
-    const count = libraryByStatus(status).length;
-    const row = el("div", "profile-bar-row");
-    row.append(el("span", "", label));
-    row.append(bar(state.library.length ? Math.round((count / state.library.length) * 100) : 0, "profile-bar"));
-    row.append(el("strong", "", String(count)));
-    statusList.append(row);
+  const stats = el("section", "stats-grid profile-stats-compact");
+  [
+    [state.library.length, "Titres"],
+    [watched, "Vus"],
+    [`${hours}h`, "Temps"],
+    [favoriteGenre, "Genre"]
+  ].forEach(([value, label]) => {
+    const card = el("article", "stat-card");
+    card.append(el("strong", "", String(value)), el("span", "", label));
+    stats.append(card);
   });
-  statusPanel.append(statusList);
-  wrap.append(statusPanel);
+  wrap.append(stats);
 
   const recentPanel = el("section", "panel");
   recentPanel.append(el("h2", "section-title", "Dernieres activites"));
@@ -463,7 +487,6 @@ function renderProfile() {
   recentPanel.append(recentList);
   wrap.append(recentPanel);
 
-  wrap.append(socialPanel());
   wrap.append(listsPanel());
   return wrap;
 }
@@ -481,10 +504,11 @@ function profileHeaderPanel() {
   }
 
   const copy = el("div", "profile-public-copy");
-  copy.append(el("span", "eyebrow", "Profil public"));
+  copy.append(el("span", "eyebrow", state.user?.settings?.isPrivate ? "Profil prive" : "Profil public"));
   copy.append(el("h2", "", state.user?.name || "Utilisateur"));
   copy.append(el("p", "subtitle", state.user?.settings?.bio || "Aucune bio pour le moment."));
   copy.append(el("small", "", `Identifiant ami : ${state.user?.id || ""}`));
+  copy.append(socialLinks(state.user?.settings?.links || {}));
 
   const actions = el("div", "profile-actions");
   const edit = el("button", "primary-button", "Modifier le profil");
@@ -515,9 +539,12 @@ function openProfileEditor() {
   renderAvatarPreview(preview, avatarValue, state.user?.name);
 
   const form = el("form", "profile-form");
+  const feedback = el("p", "auth-error");
+  feedback.hidden = true;
   const file = document.createElement("input");
   file.type = "file";
-  file.accept = "image/png,image/jpeg,image/webp";
+  file.accept = "image/png,image/jpeg,image/webp,image/gif,image/avif";
+  const crop = cropEditor();
   const name = document.createElement("input");
   name.placeholder = "Nom d'utilisateur";
   name.value = state.user?.name || "";
@@ -526,11 +553,22 @@ function openProfileEditor() {
   bio.placeholder = "Bio publique";
   bio.maxLength = 220;
   bio.value = state.user?.settings?.bio || "";
+  const privacyLabel = el("label", "check-line");
+  const isPrivate = document.createElement("input");
+  isPrivate.type = "checkbox";
+  isPrivate.checked = Boolean(state.user?.settings?.isPrivate);
+  privacyLabel.append(isPrivate, el("span", "", "Mettre mon profil en prive"));
   const showStatsLabel = el("label", "check-line");
   const showStats = document.createElement("input");
   showStats.type = "checkbox";
   showStats.checked = state.user?.settings?.showStats !== false;
   showStatsLabel.append(showStats, el("span", "", "Afficher mes statistiques sur mon profil"));
+  const linksTitle = el("div", "section-title", "Reseaux");
+  const instagram = socialInput("Instagram", state.user?.settings?.links?.instagram);
+  const x = socialInput("X / Twitter", state.user?.settings?.links?.x);
+  const tiktok = socialInput("TikTok", state.user?.settings?.links?.tiktok);
+  const letterboxd = socialInput("Letterboxd", state.user?.settings?.links?.letterboxd);
+  const website = socialInput("Site web", state.user?.settings?.links?.website);
   const submit = el("button", "primary-button", "Enregistrer");
   submit.type = "submit";
 
@@ -539,11 +577,28 @@ function openProfileEditor() {
     if (!selected) {
       return;
     }
-    avatarValue = await imageFileToDataUrl(selected);
-    renderAvatarPreview(preview, avatarValue, name.value);
+    try {
+      const avatar = await prepareAvatarImport(selected, crop);
+      avatarValue = avatar.value;
+      renderAvatarPreview(preview, avatarValue, name.value);
+      crop.root.hidden = avatar.animated;
+      crop.zoom.oninput = () => {
+        if (!crop.sourceImage) {
+          return;
+        }
+        avatarValue = croppedDataUrl(crop.sourceImage, cropValues(crop));
+        renderAvatarPreview(preview, avatarValue, name.value);
+      };
+      crop.offsetX.oninput = crop.zoom.oninput;
+      crop.offsetY.oninput = crop.zoom.oninput;
+      feedback.hidden = true;
+    } catch (error) {
+      feedback.textContent = error.message;
+      feedback.hidden = false;
+    }
   });
 
-  form.append(preview, file, name, bio, showStatsLabel, submit);
+  form.append(preview, file, crop.root, feedback, name, bio, privacyLabel, showStatsLabel, linksTitle, instagram, x, tiktok, letterboxd, website, submit);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const result = await api.updateProfile({
@@ -551,7 +606,15 @@ function openProfileEditor() {
       settings: {
         bio: bio.value,
         avatar: avatarValue,
-        showStats: showStats.checked
+        showStats: showStats.checked,
+        isPrivate: isPrivate.checked,
+        links: {
+          instagram: instagram.value,
+          x: x.value,
+          tiktok: tiktok.value,
+          letterboxd: letterboxd.value,
+          website: website.value
+        }
       }
     });
     state.user = result.user;
@@ -562,6 +625,49 @@ function openProfileEditor() {
   panel.append(form);
   dialogContent.append(panel);
   dialog.showModal();
+}
+
+function socialInput(label, value) {
+  const input = document.createElement("input");
+  input.placeholder = label;
+  input.value = value || "";
+  return input;
+}
+
+function socialLinks(links) {
+  const wrap = el("div", "profile-links");
+  Object.entries({
+    instagram: "Instagram",
+    x: "X",
+    tiktok: "TikTok",
+    letterboxd: "Letterboxd",
+    website: "Site"
+  }).forEach(([key, label]) => {
+    if (!links[key]) {
+      return;
+    }
+    const link = el("a", "profile-link", label);
+    link.href = linkHref(key, links[key]);
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    wrap.append(link);
+  });
+  return wrap;
+}
+
+function linkHref(key, value) {
+  const clean = String(value || "").trim();
+  if (/^https?:\/\//i.test(clean)) {
+    return clean;
+  }
+  const handle = clean.replace(/^@/, "");
+  return {
+    instagram: `https://instagram.com/${handle}`,
+    x: `https://x.com/${handle}`,
+    tiktok: `https://tiktok.com/@${handle}`,
+    letterboxd: `https://letterboxd.com/${handle}`,
+    website: `https://${clean}`
+  }[key];
 }
 
 function renderAvatarPreview(container, value, name) {
@@ -576,10 +682,110 @@ function renderAvatarPreview(container, value, name) {
   }
 }
 
-function imageFileToDataUrl(file) {
+function cropEditor() {
+  const root = el("div", "crop-editor");
+  root.hidden = true;
+  const image = document.createElement("img");
+  const label = el("label", "crop-control");
+  label.append(el("span", "", "Zoom"));
+  const zoom = document.createElement("input");
+  zoom.type = "range";
+  zoom.min = "1";
+  zoom.max = "2.5";
+  zoom.step = "0.05";
+  zoom.value = "1";
+  label.append(zoom);
+  const xLabel = el("label", "crop-control");
+  xLabel.append(el("span", "", "Position horizontale"));
+  const offsetX = document.createElement("input");
+  offsetX.type = "range";
+  offsetX.min = "-50";
+  offsetX.max = "50";
+  offsetX.step = "1";
+  offsetX.value = "0";
+  xLabel.append(offsetX);
+  const yLabel = el("label", "crop-control");
+  yLabel.append(el("span", "", "Position verticale"));
+  const offsetY = document.createElement("input");
+  offsetY.type = "range";
+  offsetY.min = "-50";
+  offsetY.max = "50";
+  offsetY.step = "1";
+  offsetY.value = "0";
+  yLabel.append(offsetY);
+  root.append(image, label, xLabel, yLabel);
+  return { root, image, zoom, offsetX, offsetY, sourceImage: null };
+}
+
+async function prepareAvatarImport(file, crop) {
+  const isGif = file.type === "image/gif";
+  if (isGif) {
+    const value = await imageFileToDataUrl(file, 1800000, "GIF trop lourd. Choisis un GIF de moins de 1,8 Mo.");
+    return { value, animated: true };
+  }
+
+  const value = await cropImageFile(file, crop);
+  return { value, animated: false };
+}
+
+function cropImageFile(file, crop) {
   return new Promise((resolve, reject) => {
-    if (file.size > 250000) {
-      reject(new Error("Image trop lourde. Choisis une image de moins de 250 Ko."));
+    if (file.size > 5000000) {
+      reject(new Error("Image trop lourde. Choisis une image de moins de 5 Mo."));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Image illisible"));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error("Format image non supporte"));
+      image.onload = () => {
+        crop.root.hidden = false;
+        crop.image.src = reader.result;
+        crop.zoom.value = "1";
+        crop.offsetX.value = "0";
+        crop.offsetY.value = "0";
+        crop.sourceImage = image;
+        resolve(croppedDataUrl(image, cropValues(crop)));
+      };
+      image.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function cropValues(crop) {
+  return {
+    zoom: Number(crop.zoom.value),
+    offsetX: Number(crop.offsetX.value),
+    offsetY: Number(crop.offsetY.value)
+  };
+}
+
+function croppedDataUrl(image, crop) {
+  const size = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  const scale = Math.max(size / image.width, size / image.height) * crop.zoom;
+  const width = image.width * scale;
+  const height = image.height * scale;
+  const maxOffsetX = Math.max(0, (width - size) / 2);
+  const maxOffsetY = Math.max(0, (height - size) / 2);
+  const x = (size - width) / 2 + (crop.offsetX / 50) * maxOffsetX;
+  const y = (size - height) / 2 + (crop.offsetY / 50) * maxOffsetY;
+  ctx.fillStyle = "#10151d";
+  ctx.fillRect(0, 0, size, size);
+  ctx.drawImage(image, x, y, width, height);
+  return canvas.toDataURL("image/webp", 0.86);
+}
+
+function imageFileToDataUrl(file, limit = 1800000, message = "Image trop lourde.") {
+  return new Promise((resolve, reject) => {
+    if (file.size > limit) {
+      reject(new Error(message));
       return;
     }
     const reader = new FileReader();
@@ -852,7 +1058,7 @@ async function openShow(item) {
   dialog.showModal();
 
   try {
-    const response = await api.media(item.mediaType, item.tmdbId);
+    const response = await withRetry(() => api.media(item.mediaType, item.tmdbId), 3);
     const libraryItem = state.library.find((entry) => mediaKey(entry) === mediaKey(response.media));
     const media = libraryItem ? { ...response.media, user: libraryItem.user } : response.media;
     await preloadDetailImages(media);
@@ -861,6 +1067,23 @@ async function openShow(item) {
     dialogContent.innerHTML = "";
     dialogContent.append(errorView(error.message));
   }
+}
+
+async function withRetry(action, attempts = 2) {
+  let lastError;
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      lastError = error;
+      await wait(450 * (index + 1));
+    }
+  }
+  throw lastError;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function renderDialog(show) {
@@ -932,7 +1155,7 @@ function episodePanel(show) {
     episodes.append(el("h3", "section-title", "Film"));
     const seen = Boolean(show.user?.watched?.complete);
     const item = el("article", `episode-item${seen ? " is-seen" : ""}`);
-    item.append(episodeInfo(show, 1, 1, show.title), episodeToggle(show, 1, 1, seen));
+    item.append(episodeInfo(show, 1, 1, show.title), episodeCheckControl(show, 1, 1, seen));
     list.append(item);
   } else {
     const titleRow = el("div", "episode-panel-head");
@@ -945,11 +1168,16 @@ function episodePanel(show) {
       const seasonHead = el("div", "season-head");
       const seasonText = el("div");
       const seasonSeen = watchedCount(show) >= show.seasons.slice(0, seasonIndex).reduce((a, b) => a + b, 0) + count;
+      const seasonReleased = seasonIsReleased(show, seasonNumber, count);
+      const releasedCount = releasedEpisodeCount(show, seasonNumber);
       seasonText.append(el("strong", "", `Saison ${seasonNumber}`));
       seasonText.append(el("span", "", `${count} episodes`));
-      const seasonButton = el("button", seasonSeen ? "ghost-button season-button is-complete" : "ghost-button season-button", seasonSeen ? "Saison vue" : "Valider la saison");
+      const seasonButton = el("button", seasonSeen ? "ghost-button season-button is-complete" : "ghost-button season-button", seasonSeen ? "Saison vue" : seasonReleased ? "Valider la saison" : "Valider sortis");
       seasonButton.type = "button";
-      seasonButton.disabled = !show.user || seasonSeen;
+      seasonButton.disabled = !show.user || seasonSeen || releasedCount === 0;
+      if (releasedCount === 0 && !seasonSeen) {
+        seasonButton.textContent = "Saison incomplete";
+      }
       seasonButton.addEventListener("click", () => markSeasonSeen(show, seasonNumber));
       seasonHead.append(seasonText, seasonButton);
       list.append(seasonHead);
@@ -957,8 +1185,9 @@ function episodePanel(show) {
       for (let episode = 1; episode <= count; episode += 1) {
         const absolute = show.seasons.slice(0, seasonIndex).reduce((a, b) => a + b, 0) + episode;
         const seen = show.user && watchedCount(show) >= absolute;
-        const item = el("article", `episode-item${seen ? " is-seen" : ""}`);
-        item.append(episodeInfo(show, seasonNumber, episode), episodeToggle(show, seasonNumber, episode, seen));
+        const released = episodeIsReleased(show, seasonNumber, episode);
+        const item = el("article", `episode-item${seen ? " is-seen" : ""}${released ? "" : " is-locked"}`);
+        item.append(episodeInfo(show, seasonNumber, episode), episodeCheckControl(show, seasonNumber, episode, seen));
         list.append(item);
       }
     });
@@ -1028,8 +1257,12 @@ async function markSeasonSeen(show, season) {
     return;
   }
 
-  const watched = { season, episode: show.seasons[season - 1] || 0 };
-  const isLastSeason = season >= show.seasons.length;
+  const maxEpisode = releasedEpisodeCount(show, season);
+  if (!maxEpisode) {
+    return;
+  }
+  const watched = { season, episode: maxEpisode };
+  const isLastSeason = season >= show.seasons.length && maxEpisode >= (show.seasons[season - 1] || 0);
   await api.update(show.mediaType, show.tmdbId, {
     watched,
     status: isLastSeason ? "finished" : "watching"
@@ -1039,6 +1272,17 @@ async function markSeasonSeen(show, season) {
   if (dialog.open) {
     renderDialog(state.library.find((entry) => mediaKey(entry) === mediaKey(show)));
   }
+}
+
+function releasedEpisodeCount(show, season) {
+  const total = show.seasons[season - 1] || 0;
+  let released = 0;
+  for (let episode = 1; episode <= total; episode += 1) {
+    if (episodeIsReleased(show, season, episode)) {
+      released = episode;
+    }
+  }
+  return released;
 }
 
 async function toggleEpisodeSeen(show, season, episode, isSeen) {
@@ -1098,12 +1342,79 @@ function episodeTitle(show, season, episode, fallbackTitle) {
   return title;
 }
 
-function episodeToggle(show, season, episode, seen) {
-  const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", seen ? "Vu" : "A voir");
+function episodeCheckControl(show, season, episode, seen) {
+  if (show.mediaType !== "movie" && !episodeIsReleased(show, season, episode)) {
+    return el("span", "episode-countdown", timeUntilEpisode(show, season, episode));
+  }
+
+  const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", "✓");
   button.type = "button";
   button.ariaLabel = seen ? "Marquer comme non vu" : "Marquer comme vu";
   button.addEventListener("click", () => toggleEpisodeSeen(show, season, episode, seen));
   return button;
+}
+
+function episodeToggle(show, season, episode, seen) {
+  if (show.mediaType === "movie") {
+    const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", seen ? "✓" : "");
+    button.type = "button";
+    button.ariaLabel = seen ? "Marquer comme non vu" : "Marquer comme vu";
+    button.addEventListener("click", () => toggleEpisodeSeen(show, season, episode, seen));
+    return button;
+  }
+
+  const released = episodeIsReleased(show, season, episode);
+  if (!released) {
+    return el("span", "episode-countdown", timeUntilEpisode(show, season, episode));
+  }
+
+  const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", seen ? "✓" : "");
+  button.type = "button";
+  button.ariaLabel = seen ? "Marquer comme non vu" : "Marquer comme vu";
+  button.addEventListener("click", () => toggleEpisodeSeen(show, season, episode, seen));
+  return button;
+}
+
+function seasonIsReleased(show, season, count) {
+  for (let episode = 1; episode <= count; episode += 1) {
+    if (!episodeIsReleased(show, season, episode)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function episodeIsReleased(show, season, episode) {
+  if (show.mediaType === "movie") {
+    return true;
+  }
+  const data = show.episodes?.[`${season}:${episode}`];
+  if (!data?.airDate) {
+    return false;
+  }
+  const release = new Date(`${data.airDate}T00:00:00`);
+  return release.getTime() <= Date.now();
+}
+
+function timeUntilEpisode(show, season, episode) {
+  const data = show.episodes?.[`${season}:${episode}`];
+  if (!data?.airDate) {
+    return "Pas sorti";
+  }
+  const release = new Date(`${data.airDate}T00:00:00`);
+  const diff = release.getTime() - Date.now();
+  if (diff <= 0) {
+    return "Disponible";
+  }
+  const days = Math.ceil(diff / 86400000);
+  if (days <= 1) {
+    return "Demain";
+  }
+  if (days < 30) {
+    return `Dans ${days} j`;
+  }
+  const months = Math.ceil(days / 30);
+  return `Dans ${months} mois`;
 }
 
 function progressBefore(show, season, episode) {
@@ -1238,20 +1549,39 @@ function formatFrenchAirTime(value) {
 
 function topbar(title, subtitle) {
   const bar = el("header", "topbar");
+  const brand = el("button", "brand-button");
+  brand.type = "button";
+  brand.ariaLabel = "Accueil";
+  const logo = document.createElement("img");
+  logo.src = "icons/logo.png";
+  logo.alt = "";
+  brand.append(logo);
+  brand.addEventListener("click", () => {
+    state.route = "home";
+    render();
+  });
   const text = el("div");
   text.append(el("div", "eyebrow", "Suivi TV"));
   text.append(el("h1", "title", title));
   if (subtitle) {
     text.append(el("p", "subtitle", subtitle));
   }
-  const profileButton = el("button", "icon-button", "o");
+  const profileButton = el("button", state.user?.settings?.avatar ? "icon-button top-avatar" : "icon-button", "");
   profileButton.type = "button";
   profileButton.ariaLabel = "Profil";
+  if (state.user?.settings?.avatar) {
+    const image = document.createElement("img");
+    image.src = state.user.settings.avatar;
+    image.alt = "";
+    profileButton.append(image);
+  } else {
+    profileButton.textContent = initials(state.user?.name || "Utilisateur");
+  }
   profileButton.addEventListener("click", () => {
     state.route = "profile";
     render();
   });
-  bar.append(text, profileButton);
+  bar.append(brand, text, profileButton);
   return bar;
 }
 

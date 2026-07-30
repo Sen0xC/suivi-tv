@@ -3,14 +3,14 @@ create table if not exists public.suivi_users (
   email text unique,
   name text not null,
   password_hash text,
-  settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"bio":"","avatar":"","showStats":true}'::jsonb,
+  settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"bio":"","avatar":"","showStats":true,"isPrivate":false,"links":{"instagram":"","x":"","tiktok":"","letterboxd":"","website":""}}'::jsonb,
   created_at timestamptz not null default now()
 );
 
 alter table public.suivi_users
   add column if not exists email text,
   add column if not exists password_hash text,
-  add column if not exists settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"bio":"","avatar":"","showStats":true}'::jsonb;
+  add column if not exists settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"bio":"","avatar":"","showStats":true,"isPrivate":false,"links":{"instagram":"","x":"","tiktok":"","letterboxd":"","website":""}}'::jsonb;
 
 create unique index if not exists suivi_users_email_unique
   on public.suivi_users(email)
@@ -34,9 +34,13 @@ create table if not exists public.suivi_media (
   backdrop text not null default '',
   synopsis text not null default '',
   seasons jsonb not null default '[1]'::jsonb,
+  episodes jsonb not null default '{}'::jsonb,
   next_air text,
   primary key (media_type, tmdb_id)
 );
+
+alter table public.suivi_media
+  add column if not exists episodes jsonb not null default '{}'::jsonb;
 
 create table if not exists public.suivi_library (
   user_id text not null references public.suivi_users(id) on delete cascade,

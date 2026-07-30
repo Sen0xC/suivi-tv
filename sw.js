@@ -1,11 +1,12 @@
-const CACHE_NAME = "suivi-tv-v13";
+const CACHE_NAME = "suivi-tv-v17";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./manifest.webmanifest",
-  "./icons/icon.svg"
+  "./icons/icon.svg",
+  "./icons/logo.png"
 ];
 
 self.addEventListener("install", (event) => {

@@ -92,10 +92,47 @@ li {
 }
 
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 14px;
+}
+
+.brand-button {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  border: 0;
+  border-radius: 16px;
+  padding: 0;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow:
+    var(--ring-strong),
+    0 18px 40px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  transition-property: scale, transform, box-shadow;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.brand-button:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    var(--ring-strong),
+    0 22px 50px rgba(141, 240, 113, 0.12);
+}
+
+.brand-button:active {
+  scale: 0.96;
+}
+
+.brand-button img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  outline: 0;
 }
 
 .eyebrow {
@@ -345,6 +382,19 @@ li {
   width: 44px;
   place-items: center;
   font-size: 1.2rem;
+}
+
+.top-avatar {
+  padding: 0;
+  overflow: hidden;
+  font-size: 0.85rem;
+  font-weight: 900;
+}
+
+.top-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .grid-two {
@@ -733,6 +783,10 @@ button:focus-visible {
   background: linear-gradient(150deg, rgba(28, 38, 31, 0.92), rgba(10, 16, 13, 0.92));
 }
 
+.episode-item.is-locked {
+  opacity: 0.72;
+}
+
 .seen-mark {
   color: var(--acid);
   font-weight: 900;
@@ -801,20 +855,24 @@ button:focus-visible {
 .episode-toggle {
   position: relative;
   overflow: hidden;
-  min-width: 72px;
-  min-height: 40px;
+  display: grid;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.035)),
     rgba(255, 255, 255, 0.07);
   box-shadow:
     var(--ring),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  color: var(--muted-strong);
+  color: rgba(211, 216, 209, 0.42);
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: 1.2rem;
   font-weight: 850;
+  place-items: center;
   transition-property: scale, background-color, color, box-shadow, transform;
   transition-duration: 160ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
@@ -837,6 +895,25 @@ button:focus-visible {
     linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.02)),
     rgba(141, 240, 113, 0.18);
   color: var(--acid);
+}
+
+.episode-toggle:not(.is-on) {
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.28);
+}
+
+.episode-countdown {
+  display: inline-flex;
+  min-width: max-content;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: var(--ring);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 850;
 }
 
 .episode-panel-head,
@@ -909,6 +986,67 @@ button:focus-visible {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.calendar-month-panel {
+  gap: 14px;
+}
+
+.month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.month-weekday {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-align: center;
+}
+
+.month-day {
+  display: grid;
+  min-height: 54px;
+  border-radius: 16px;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: var(--ring);
+  color: var(--muted-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.month-day strong {
+  font-size: 0.9rem;
+}
+
+.month-day small {
+  min-width: 20px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: var(--acid);
+  color: #10130b;
+  font-size: 0.66rem;
+  font-weight: 900;
+}
+
+.month-day.has-release {
+  background:
+    radial-gradient(circle at top, rgba(232, 221, 76, 0.3), transparent 48%),
+    rgba(141, 240, 113, 0.13);
+  color: var(--ink);
+  box-shadow:
+    var(--ring-strong),
+    0 12px 30px rgba(141, 240, 113, 0.1);
+}
+
+.month-day.is-today {
+  outline: 1px solid rgba(232, 221, 76, 0.58);
+  outline-offset: -2px;
+}
+
+.month-day.is-empty {
+  visibility: hidden;
 }
 
 .calendar-date {
@@ -1065,10 +1203,8 @@ button:focus-visible {
   align-items: center;
   border-radius: 28px;
   padding: clamp(16px, 3vw, 22px);
-  background:
-    radial-gradient(circle at top left, rgba(141, 240, 113, 0.16), transparent 42%),
-    linear-gradient(150deg, rgba(18, 25, 34, 0.94), rgba(8, 11, 16, 0.94));
-  box-shadow: var(--shadow-lift), var(--ring-strong);
+  background: linear-gradient(150deg, rgba(18, 25, 34, 0.9), rgba(8, 11, 16, 0.92));
+  box-shadow: var(--ring-strong);
 }
 
 .profile-avatar {
@@ -1119,6 +1255,24 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.profile-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.profile-link {
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: var(--ring);
+  color: var(--muted-strong);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
 .profile-actions {
   display: grid;
   gap: 9px;
@@ -1129,6 +1283,38 @@ button:focus-visible {
 .profile-form {
   display: grid;
   gap: 14px;
+}
+
+.crop-editor {
+  display: grid;
+  gap: 10px;
+  border-radius: 22px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: var(--ring);
+}
+
+.crop-editor[hidden] {
+  display: none;
+}
+
+.crop-editor img {
+  width: 100%;
+  max-height: 260px;
+  border-radius: 16px;
+  object-fit: cover;
+}
+
+.crop-control {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.crop-control input {
+  padding: 0;
 }
 
 .profile-form input,

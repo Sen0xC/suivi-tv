@@ -268,8 +268,9 @@ async function getRecommendations(db) {
   const seeds = Object.values(db.library)
     .filter((item) => ["watching", "finished"].includes(item.status))
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
-    .flatMap((item) => item.favorite ? [item, item, item] : [item])
     .slice(0, 8);
+  const seedWeights = Object.fromEntries(seeds.map((seed) => [dbKey(seed.mediaType, seed.tmdbId), recommendationSeedWeight(seed)]));
+  const preferredGenres = genreWeights(db, seeds);
 
   if (!hasTmdbAuth() || !seeds.length) {
     const fallback = await getTrending();
@@ -277,26 +278,83 @@ async function getRecommendations(db) {
   }
 
   const responses = await Promise.allSettled(
-    seeds.map((seed) => tmdb(`/${seed.mediaType}/${seed.tmdbId}/recommendations`, { language: "fr-FR" }))
+    seeds.flatMap((seed) => [
+      tmdb(`/${seed.mediaType}/${seed.tmdbId}/recommendations`, { language: "fr-FR" }).then((data) => ({ seed, data })),
+      tmdb(`/${seed.mediaType}/${seed.tmdbId}/similar`, { language: "fr-FR" }).then((data) => ({ seed, data }))
+    ])
   );
 
   const seen = new Set(libraryKeys);
-  const items = [];
+  const scored = new Map();
   responses.forEach((result) => {
     if (result.status !== "fulfilled") {
       return;
     }
-    result.value.results.filter(isSupportedMedia).forEach((item) => {
-      const normalized = normalizeSearchResult(item);
+    const seedWeight = seedWeights[dbKey(result.value.seed.mediaType, result.value.seed.tmdbId)] || 1;
+    result.value.data.results.forEach((item) => {
+      const source = { ...item, media_type: item.media_type || result.value.seed.mediaType };
+      if (!isSupportedMedia(source)) {
+        return;
+      }
+      const normalized = normalizeSearchResult(source);
       const key = dbKey(normalized.mediaType, normalized.tmdbId);
       if (!seen.has(key)) {
-        seen.add(key);
-        items.push(normalized);
+        const current = scored.get(key) || { item: normalized, score: 0 };
+        current.score += seedWeight + (normalized.rating || 0) * 0.15 + genreScore(normalized, preferredGenres);
+        scored.set(key, current);
       }
     });
   });
 
+  const items = [...scored.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.item)
+    .slice(0, 12);
+
+  if (items.length < 8) {
+    const trending = await getTrending();
+    trending.forEach((item) => {
+      const key = dbKey(item.mediaType, item.tmdbId);
+      if (!libraryKeys.has(key) && !items.some((existing) => mediaSame(existing, item))) {
+        items.push(item);
+      }
+    });
+  }
+
   return items.slice(0, 12);
+}
+
+function recommendationSeedWeight(item) {
+  let weight = 1;
+  if (item.favorite) {
+    weight += 5;
+  }
+  if (item.status === "finished") {
+    weight += 2;
+  }
+  if (item.status === "watching") {
+    weight += 1;
+  }
+  return weight;
+}
+
+function genreWeights(db, seeds) {
+  return seeds.reduce((acc, seed) => {
+    const media = db.media[dbKey(seed.mediaType, seed.tmdbId)];
+    const weight = recommendationSeedWeight(seed);
+    (media?.genres || []).forEach((genre) => {
+      acc[genre] = (acc[genre] || 0) + weight;
+    });
+    return acc;
+  }, {});
+}
+
+function genreScore(item, weights) {
+  return (item.genres || []).reduce((total, genre) => total + (weights[genre] || 0) * 0.2, 0);
+}
+
+function mediaSame(a, b) {
+  return a.mediaType === b.mediaType && a.tmdbId === b.tmdbId;
 }
 
 async function registerAccount(email, password, name) {
@@ -458,7 +516,7 @@ function publicUser(user) {
   return {
     id: user.id,
     name: user.name,
-    settings: user.settings || defaultSettings(),
+    settings: normalizeSettings(user.settings),
     createdAt: user.createdAt
   };
 }
@@ -471,20 +529,72 @@ function defaultSettings() {
     notifications: false,
     bio: "",
     avatar: "",
-    showStats: true
+    showStats: true,
+    isPrivate: false,
+    links: {
+      instagram: "",
+      x: "",
+      tiktok: "",
+      letterboxd: "",
+      website: ""
+    }
   };
 }
 
 function sanitizeProfileSettings(settings) {
+  const normalized = normalizeSettings(settings);
   return {
     locale: "fr-FR",
-    region: sanitizePublicText(settings.region || "FR", 8) || "FR",
-    adultContent: Boolean(settings.adultContent),
-    notifications: Boolean(settings.notifications),
-    bio: sanitizePublicText(settings.bio || "", 220),
-    avatar: sanitizeAvatar(settings.avatar || ""),
-    showStats: settings.showStats !== false
+    region: sanitizePublicText(normalized.region || "FR", 8) || "FR",
+    adultContent: Boolean(normalized.adultContent),
+    notifications: Boolean(normalized.notifications),
+    bio: sanitizePublicText(normalized.bio || "", 220),
+    avatar: sanitizeAvatar(normalized.avatar || ""),
+    showStats: normalized.showStats !== false,
+    isPrivate: Boolean(normalized.isPrivate),
+    links: sanitizeLinks(normalized.links || {})
   };
+}
+
+function normalizeSettings(settings) {
+  let parsed = settings;
+  if (typeof settings === "string") {
+    try {
+      parsed = JSON.parse(settings);
+    } catch {
+      parsed = {};
+    }
+  }
+  return {
+    ...defaultSettings(),
+    ...(parsed || {}),
+    links: {
+      ...defaultSettings().links,
+      ...((parsed || {}).links || {})
+    }
+  };
+}
+
+function sanitizeLinks(links) {
+  return {
+    instagram: sanitizeHandleOrUrl(links.instagram),
+    x: sanitizeHandleOrUrl(links.x),
+    tiktok: sanitizeHandleOrUrl(links.tiktok),
+    letterboxd: sanitizeHandleOrUrl(links.letterboxd),
+    website: sanitizeUrl(links.website)
+  };
+}
+
+function sanitizeHandleOrUrl(value) {
+  return sanitizePublicText(value, 80);
+}
+
+function sanitizeUrl(value) {
+  const text = sanitizePublicText(value, 160);
+  if (!text) {
+    return "";
+  }
+  return /^https?:\/\//i.test(text) ? text : `https://${text}`;
 }
 
 function sanitizePublicText(value, maxLength) {
@@ -499,7 +609,7 @@ function sanitizeAvatar(value) {
   if (!text.startsWith("data:image/")) {
     return "";
   }
-  return text.length <= 350000 ? text : "";
+  return text.length <= 2600000 ? text : "";
 }
 
 function ensureAuthStorage() {
@@ -517,7 +627,7 @@ async function getMediaDetails(mediaType, tmdbId) {
   }
 
   const normalized = hasTmdbAuth()
-    ? await normalizeDetails(mediaType, await tmdb(`/${mediaType}/${tmdbId}`, { language: "fr-FR" }))
+    ? await normalizeDetails(mediaType, await tmdbRetry(`/${mediaType}/${tmdbId}`, { language: "fr-FR" }))
     : normalizeFallback(fallbackCatalog.find((item) => dbKey(item.mediaType, item.tmdbId) === key));
 
   db.media[key] = normalized;
@@ -970,6 +1080,7 @@ function toMediaRow(media) {
     backdrop: media.backdrop || "",
     synopsis: media.synopsis || "",
     seasons: media.seasons || [1],
+    episodes: media.episodes || {},
     next_air: media.nextAirEpisode ? JSON.stringify(media.nextAirEpisode) : media.nextAir
   };
 }
@@ -986,6 +1097,7 @@ function fromMediaRow(row) {
     backdrop: row.backdrop || "",
     synopsis: row.synopsis || "",
     seasons: row.seasons || [1],
+    episodes: row.episodes || {},
     nextAir: parseNextAir(row.next_air)?.airDate || row.next_air,
     nextAirEpisode: parseNextAir(row.next_air)
   };
@@ -1111,6 +1223,23 @@ async function tmdb(endpoint, params = {}) {
     throw new Error(`TMDB ${response.status}`);
   }
   return response.json();
+}
+
+async function tmdbRetry(endpoint, params = {}, attempts = 3) {
+  let lastError;
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      return await tmdb(endpoint, params);
+    } catch (error) {
+      lastError = error;
+      await delay(350 * (index + 1));
+    }
+  }
+  throw lastError;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeSearchResult(item) {
