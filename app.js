@@ -47,6 +47,9 @@ const api = {
       body: JSON.stringify(patch)
     });
   },
+  async remove(mediaType, tmdbId) {
+    return request(`/api/library/${mediaType}/${tmdbId}`, { method: "DELETE" });
+  },
   async seen(mediaType, tmdbId) {
     return request(`/api/library/${mediaType}/${tmdbId}/seen`, { method: "POST" });
   },
@@ -1110,36 +1113,15 @@ function renderDialog(show) {
     controls.append(progressPanel(show, next));
   }
 
-  const select = document.createElement("select");
-  select.className = "status-select";
-  Object.entries(statusLabels).forEach(([value, label]) => {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    option.selected = (show.user?.status || "planned") === value;
-    select.append(option);
-  });
-  select.addEventListener("change", async (event) => {
-    if (!show.user) {
-      await addMedia(show, event.target.value);
-      return;
-    }
-    await api.update(show.mediaType, show.tmdbId, { status: event.target.value });
-    await refreshData();
-    renderDialog(state.library.find((entry) => mediaKey(entry) === mediaKey(show)));
-    render();
-  });
-
-  const addButton = el("button", "ghost-button", inLibrary ? "Dans ta bibliotheque" : "Ajouter a ma liste");
+  const addButton = el("button", inLibrary ? "danger-button" : "primary-button", inLibrary ? "Retirer de ma bibliotheque" : "Ajouter a ma bibliotheque");
   addButton.type = "button";
-  addButton.disabled = inLibrary;
-  addButton.addEventListener("click", () => addMedia(show, "planned"));
+  addButton.addEventListener("click", () => (inLibrary ? removeMedia(show) : addMedia(show, "planned")));
   const favoriteButton = el("button", show.user?.favorite ? "primary-button" : "ghost-button", show.user?.favorite ? "Coup de coeur" : "Marquer coup de coeur");
   favoriteButton.type = "button";
   favoriteButton.disabled = !inLibrary;
   favoriteButton.addEventListener("click", () => toggleFavorite(show));
 
-  controls.append(select, addButton, favoriteButton, listPicker(show, inLibrary));
+  controls.append(addButton, favoriteButton, listPicker(show, inLibrary));
   body.append(controls);
 
   body.append(episodePanel(show));
@@ -1197,20 +1179,52 @@ function episodePanel(show) {
 }
 
 async function addMedia(show, status) {
-  await api.add(show.mediaType, show.tmdbId, status);
-  await refreshData();
+  const response = await api.add(show.mediaType, show.tmdbId, status);
+  upsertLibraryItem(response.item);
   render();
-  renderDialog(state.library.find((entry) => mediaKey(entry) === mediaKey(show)));
+  renderDialog(response.item);
+  refreshData().then(render).catch(() => {});
+}
+
+async function removeMedia(show) {
+  const key = mediaKey(show);
+  const previous = state.library.find((entry) => mediaKey(entry) === key);
+  state.library = state.library.filter((entry) => mediaKey(entry) !== key);
+  state.explore = mergeExplore(state.explore, state.library);
+  state.recommendations = mergeExplore(state.recommendations, state.library);
+  render();
+  renderDialog({ ...show, user: null });
+
+  try {
+    await api.remove(show.mediaType, show.tmdbId);
+    refreshData().then(render).catch(() => {});
+  } catch (error) {
+    if (previous) {
+      upsertLibraryItem(previous);
+    }
+    render();
+    renderDialog(previous || show);
+    throw error;
+  }
+}
+
+function upsertLibraryItem(item) {
+  const key = mediaKey(item);
+  state.library = [item, ...state.library.filter((entry) => mediaKey(entry) !== key)];
+  state.explore = mergeExplore(state.explore, state.library);
+  state.recommendations = mergeExplore(state.recommendations, state.library);
 }
 
 function listPicker(show, inLibrary) {
+  if (!inLibrary || !state.social.lists.length) {
+    return document.createDocumentFragment();
+  }
   const wrap = el("div", "list-picker");
   const select = document.createElement("select");
   select.className = "status-select";
-  select.disabled = !inLibrary || !state.social.lists.length;
   const empty = document.createElement("option");
   empty.value = "";
-  empty.textContent = state.social.lists.length ? "Ajouter a une liste..." : "Cree une liste depuis Profil";
+  empty.textContent = "Ajouter a une liste...";
   select.append(empty);
   state.social.lists.forEach((list) => {
     const option = document.createElement("option");
@@ -1235,21 +1249,37 @@ async function toggleFavorite(show) {
     await addMedia(show, "planned");
     return;
   }
-  await api.update(show.mediaType, show.tmdbId, { favorite: !show.user.favorite });
-  await refreshData();
+
+  const optimistic = {
+    ...show,
+    user: {
+      ...show.user,
+      favorite: !show.user.favorite
+    }
+  };
+  upsertLibraryItem(optimistic);
   render();
   if (dialog.open) {
-    renderDialog(state.library.find((entry) => mediaKey(entry) === mediaKey(show)));
+    renderDialog(optimistic);
   }
+
+  const response = await api.update(show.mediaType, show.tmdbId, { favorite: optimistic.user.favorite });
+  upsertLibraryItem(response.item);
+  render();
+  if (dialog.open) {
+    renderDialog(response.item);
+  }
+  refreshData().then(render).catch(() => {});
 }
 
 async function markSeen(show) {
-  await api.seen(show.mediaType, show.tmdbId);
-  await refreshData();
+  const response = await api.seen(show.mediaType, show.tmdbId);
+  upsertLibraryItem(response.item);
   render();
   if (dialog.open) {
-    renderDialog(state.library.find((entry) => mediaKey(entry) === mediaKey(show)));
+    renderDialog(response.item);
   }
+  refreshData().then(render).catch(() => {});
 }
 
 async function markSeasonSeen(show, season) {
@@ -1263,15 +1293,16 @@ async function markSeasonSeen(show, season) {
   }
   const watched = { season, episode: maxEpisode };
   const isLastSeason = season >= show.seasons.length && maxEpisode >= (show.seasons[season - 1] || 0);
-  await api.update(show.mediaType, show.tmdbId, {
+  const response = await api.update(show.mediaType, show.tmdbId, {
     watched,
     status: isLastSeason ? "finished" : "watching"
   });
-  await refreshData();
+  upsertLibraryItem(response.item);
   render();
   if (dialog.open) {
-    renderDialog(state.library.find((entry) => mediaKey(entry) === mediaKey(show)));
+    renderDialog(response.item);
   }
+  refreshData().then(render).catch(() => {});
 }
 
 function releasedEpisodeCount(show, season) {
@@ -1292,23 +1323,25 @@ async function toggleEpisodeSeen(show, season, episode, isSeen) {
   }
 
   if (show.mediaType === "movie") {
-    await api.update(show.mediaType, show.tmdbId, {
+    const response = await api.update(show.mediaType, show.tmdbId, {
       watched: { complete: !isSeen },
       status: isSeen ? "planned" : "finished"
     });
+    upsertLibraryItem(response.item);
   } else {
     const target = isSeen ? progressBefore(show, season, episode) : { season, episode };
-    await api.update(show.mediaType, show.tmdbId, {
+    const response = await api.update(show.mediaType, show.tmdbId, {
       watched: target,
       status: totalWatchedFromProgress(show, target) >= totalEpisodes(show) ? "finished" : "watching"
     });
+    upsertLibraryItem(response.item);
   }
 
-  await refreshData();
   render();
   if (dialog.open) {
     renderDialog(state.library.find((entry) => mediaKey(entry) === mediaKey(show)));
   }
+  refreshData().then(render).catch(() => {});
 }
 
 function episodeInfo(show, season, episode, fallbackTitle) {
@@ -1356,7 +1389,7 @@ function episodeCheckControl(show, season, episode, seen) {
 
 function episodeToggle(show, season, episode, seen) {
   if (show.mediaType === "movie") {
-    const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", seen ? "✓" : "");
+    const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", "✓");
     button.type = "button";
     button.ariaLabel = seen ? "Marquer comme non vu" : "Marquer comme vu";
     button.addEventListener("click", () => toggleEpisodeSeen(show, season, episode, seen));
@@ -1368,7 +1401,7 @@ function episodeToggle(show, season, episode, seen) {
     return el("span", "episode-countdown", timeUntilEpisode(show, season, episode));
   }
 
-  const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", seen ? "✓" : "");
+  const button = el("button", seen ? "episode-toggle is-on" : "episode-toggle", "✓");
   button.type = "button";
   button.ariaLabel = seen ? "Marquer comme non vu" : "Marquer comme vu";
   button.addEventListener("click", () => toggleEpisodeSeen(show, season, episode, seen));

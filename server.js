@@ -191,6 +191,13 @@ async function handleApi(req, res, url) {
   }
 
   const libraryMatch = url.pathname.match(/^\/api\/library\/(tv|movie)\/(\d+)$/);
+  if (libraryMatch && req.method === "DELETE") {
+    const sessionUser = await requireSession(req);
+    await removeLibraryItem(sessionUser.id, libraryMatch[1], Number(libraryMatch[2]));
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (libraryMatch && req.method === "PATCH") {
     const sessionUser = await requireSession(req);
     const body = await readBody(req);
@@ -677,6 +684,22 @@ async function updateLibraryItem(userId, mediaType, tmdbId, patch) {
   item.updatedAt = new Date().toISOString();
   await writeDb(db);
   return enrichItem(item, db.media[key]);
+}
+
+async function removeLibraryItem(userId, mediaType, tmdbId) {
+  const db = await readDb(userId);
+  const key = dbKey(mediaType, tmdbId);
+  delete db.library[key];
+
+  if (hasSupabaseConfig()) {
+    await supabaseRequest(
+      `/suivi_library?user_id=eq.${encodeURIComponent(userId)}&media_type=eq.${encodeURIComponent(mediaType)}&tmdb_id=eq.${encodeURIComponent(tmdbId)}`,
+      { method: "DELETE" }
+    );
+    return;
+  }
+
+  await writeDb(db);
 }
 
 async function markNextSeen(userId, mediaType, tmdbId) {

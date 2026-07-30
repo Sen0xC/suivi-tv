@@ -286,6 +286,7 @@ li {
 
 .primary-button,
 .ghost-button,
+.danger-button,
 .icon-button,
 .filter-chip,
 .status-select {
@@ -303,6 +304,7 @@ li {
 
 .primary-button::before,
 .ghost-button::before,
+.danger-button::before,
 .icon-button::before,
 .filter-chip::before {
   position: absolute;
@@ -319,6 +321,7 @@ li {
 
 .primary-button:hover::before,
 .ghost-button:hover::before,
+.danger-button:hover::before,
 .icon-button:hover::before,
 .filter-chip:hover::before {
   opacity: 1;
@@ -327,6 +330,7 @@ li {
 
 .primary-button:active,
 .ghost-button:active,
+.danger-button:active,
 .icon-button:active,
 .filter-chip:active,
 .nav-item:active {
@@ -351,6 +355,7 @@ li {
 }
 
 .ghost-button,
+.danger-button,
 .icon-button,
 .status-select {
   background:
@@ -363,6 +368,7 @@ li {
 }
 
 .ghost-button:hover,
+.danger-button:hover,
 .icon-button:hover,
 .filter-chip:hover {
   box-shadow:
@@ -375,6 +381,23 @@ li {
 .ghost-button {
   padding: 0 14px;
   font-weight: 800;
+}
+
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.025)),
+    rgba(255, 107, 95, 0.13);
+  box-shadow:
+    0 16px 34px rgba(255, 107, 95, 0.08),
+    var(--ring),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #ffd8d4;
+  font-weight: 900;
 }
 
 .icon-button {
@@ -1531,6 +1554,14 @@ button:focus-visible {
   fill: currentColor;
 }
 
+.nav-icon img {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  object-fit: cover;
+  outline: 0;
+}
+
 .nav-item.is-active {
   color: var(--acid);
   background: transparent;
@@ -1572,7 +1603,73 @@ button:focus-visible {
   position: absolute;
   top: 12px;
   right: 12px;
-  z-index: 2;
+  z-index: 3;
+  display: grid;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 18px;
+  padding: 0;
+  place-items: center;
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.18), transparent 44%),
+    rgba(18, 24, 32, 0.78);
+  box-shadow:
+    0 18px 38px rgba(0, 0, 0, 0.35),
+    var(--ring-strong),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+  cursor: pointer;
+  backdrop-filter: blur(16px);
+  transition-property: scale, transform, background-color, box-shadow;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.dialog-close:hover {
+  transform: translateY(-1px) rotate(2deg);
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.22), transparent 44%),
+    rgba(28, 36, 46, 0.88);
+  box-shadow:
+    0 22px 48px rgba(0, 0, 0, 0.42),
+    var(--ring-strong),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.dialog-close:active {
+  scale: 0.94;
+}
+
+.dialog-close span,
+.dialog-close span::before,
+.dialog-close span::after {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.dialog-close span {
+  position: relative;
+  background: transparent;
+}
+
+.dialog-close span::before,
+.dialog-close span::after {
+  position: absolute;
+  top: 0;
+  left: 0;
+  content: "";
+}
+
+.dialog-close span::before {
+  transform: rotate(45deg);
+}
+
+.dialog-close span::after {
+  transform: rotate(-45deg);
 }
 
 .stagger > * {
@@ -1695,7 +1792,8 @@ button:focus-visible {
   }
 
   .show-row .ghost-button,
-  .show-row .primary-button {
+  .show-row .primary-button,
+  .show-row .danger-button {
     grid-column: 1 / -1;
     width: 100%;
   }
@@ -1724,7 +1822,8 @@ button:focus-visible {
   }
 
   .nav-icon,
-  .nav-icon svg {
+  .nav-icon svg,
+  .nav-icon img {
     width: 20px;
     height: 20px;
   }
@@ -1751,6 +1850,22 @@ button:focus-visible {
     max-height: 100dvh;
     border-radius: 0;
     padding: max(14px, env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  .dialog-close {
+    top: max(10px, env(safe-area-inset-top));
+    right: 10px;
+    width: 44px;
+    height: 44px;
+    border-radius: 16px;
+  }
+
+  .controls-panel {
+    gap: 10px;
+  }
+
+  .controls-panel > * {
+    width: 100%;
   }
 
   .detail-hero {
