@@ -1025,11 +1025,11 @@ function socialPanel() {
   panel.append(el("h2", "section-title", "Amis"));
   const share = el("div", "friend-code-card");
   share.append(el("span", "", "Code ami"));
-  share.append(el("strong", "", shortFriendCode(state.user?.id || "local-user")));
+  share.append(el("strong", "", friendCode(state.user)));
   const copy = el("button", "ghost-button", "Copier");
   copy.type = "button";
   copy.addEventListener("click", async () => {
-    await navigator.clipboard?.writeText(state.user?.id || "local-user");
+    await navigator.clipboard?.writeText(friendCode(state.user));
     copy.textContent = "Copie";
     window.setTimeout(() => {
       copy.textContent = "Copier";
@@ -1059,17 +1059,107 @@ function socialPanel() {
     list.append(el("p", "empty", "Aucun ami ajoute pour le moment."));
   }
   state.social.friends.forEach((entry) => {
-    const row = el("article", "social-row");
+    const row = el("button", "social-row friend-card");
+    row.type = "button";
     const progress = entry.friend.progress || {};
-    row.append(
+    const avatar = friendAvatar(entry.friend);
+    const copy = el("span", "friend-card-copy");
+    copy.append(
       el("strong", "", entry.friend.name),
       el("span", "", `${progress.watching || 0} en cours - ${progress.finished || 0} terminees`),
       el("small", "", friendActivityLabel(progress))
     );
+    row.append(
+      avatar,
+      copy,
+      el("span", "friend-card-action", "Voir")
+    );
+    row.addEventListener("click", () => openFriendProfile(entry.friend));
     list.append(row);
   });
   panel.append(list);
   return panel;
+}
+
+function friendAvatar(friend) {
+  const avatar = el("span", "friend-avatar");
+  if (friend?.settings?.avatar) {
+    const image = document.createElement("img");
+    image.src = friend.settings.avatar;
+    image.alt = "";
+    avatar.append(image);
+  } else {
+    avatar.textContent = initials(friend?.name || "Ami");
+  }
+  return avatar;
+}
+
+function friendCode(user) {
+  return user?.settings?.friendCode || shortFriendCode(user?.id || "local-user");
+}
+
+function openFriendProfile(friend) {
+  const progress = friend.progress || {};
+  dialogContent.innerHTML = "";
+  const panel = el("section", "friend-profile");
+  const hero = el("div", "friend-profile-hero");
+  hero.append(friendAvatar(friend));
+  const copy = el("div", "friend-profile-copy");
+  copy.append(
+    el("span", "eyebrow", friend.settings?.isPrivate ? "Profil prive" : "Profil ami"),
+    el("h2", "", friend.name || "Ami"),
+    el("p", "subtitle", friend.settings?.bio || "Aucune bio partagee.")
+  );
+  hero.append(copy);
+  panel.append(hero);
+
+  const stats = el("div", "stats-grid");
+  [
+    [progress.total || 0, "Titres"],
+    [progress.watching || 0, "En cours"],
+    [progress.finished || 0, "Termines"],
+    [progress.favorites || 0, "Coups de coeur"]
+  ].forEach(([value, label]) => {
+    const card = el("article", "stat-card");
+    card.append(el("strong", "", String(value)), el("span", "", label));
+    stats.append(card);
+  });
+  panel.append(stats);
+
+  const activity = el("section", "panel friend-profile-activity");
+  activity.append(el("h3", "section-title", "Activite"));
+  if (friend.settings?.isPrivate) {
+    activity.append(el("p", "empty", "Ce profil est prive. Les details de bibliotheque ne sont pas partages."));
+  } else {
+    activity.append(friendProfileShelf("Vu recemment", progress.recent || []));
+    activity.append(friendProfileShelf("Bibliotheque", progress.library || []));
+    if (progress.favoriteTitle) {
+      activity.append(el("p", "empty", `Coup de coeur recent : ${progress.favoriteTitle}`));
+    }
+  }
+  panel.append(activity);
+  dialogContent.append(panel);
+  dialog.showModal();
+}
+
+function friendProfileShelf(title, items) {
+  const section = el("div", "friend-profile-shelf");
+  section.append(el("h4", "", title));
+  if (!items.length) {
+    section.append(el("p", "empty", "Aucun titre partage pour le moment."));
+    return section;
+  }
+  const grid = el("div", "friend-media-grid");
+  items.forEach((item) => {
+    const card = el("article", "friend-media-card");
+    const img = document.createElement("img");
+    img.src = item.poster || "icons/icon.svg";
+    img.alt = "";
+    card.append(img, el("strong", "", item.title), el("span", "", statusLabels[item.status] || mediaLabel(item)));
+    grid.append(card);
+  });
+  section.append(grid);
+  return section;
 }
 
 function shortFriendCode(value) {
