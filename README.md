@@ -278,6 +278,13 @@ Important :
 - executer `supabase/schema.sql` dans Supabase avant le premier deploy ;
 - redeployer apres chaque changement de variable d'environnement.
 
+Si l'app affiche `Unexpected token 'A', "A server e"... is not valid JSON`, cela veut dire que Vercel renvoie une page d'erreur texte au lieu d'une reponse API JSON. A verifier en priorite :
+
+- les variables `SUPABASE_URL` et `SUPABASE_SERVICE_ROLE_KEY` sont bien presentes dans Vercel ;
+- `supabase/schema.sql` a bien ete execute ;
+- le projet a bien ete redeploye apres ajout des variables ;
+- l'URL `/api/health` repond en JSON.
+
 ## Publier sur GitHub
 
 Le projet contient deja un `.gitignore` qui exclut :

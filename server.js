@@ -8,7 +8,7 @@ loadEnv();
 
 const PORT = Number(process.env.PORT || 4173);
 const ROOT = __dirname;
-const DATA_DIR = path.join(ROOT, "data");
+const DATA_DIR = process.env.VERCEL ? path.join("/tmp", "suivi-tv-data") : path.join(ROOT, "data");
 const DB_PATH = path.join(DATA_DIR, "database.json");
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const IMAGE_BASE = "https://image.tmdb.org/t/p/";

@@ -119,11 +119,24 @@ async function request(url, options = {}) {
     },
     ...options
   });
-  const data = await response.json();
+  const contentType = response.headers.get("content-type") || "";
+  const raw = await response.text();
+  const data = contentType.includes("application/json") && raw ? JSON.parse(raw) : {};
   if (!response.ok) {
-    throw new Error(data.detail || data.error || "Erreur API");
+    throw new Error(data.detail || data.error || readableHttpError(response, raw));
   }
   return data;
+}
+
+function readableHttpError(response, raw) {
+  const text = String(raw || "").trim();
+  if (text.startsWith("A server error") || response.status >= 500) {
+    return "Erreur serveur: verifie les variables Vercel/Supabase puis redeploie.";
+  }
+  if (text) {
+    return text.slice(0, 180);
+  }
+  return `Erreur API ${response.status}`;
 }
 
 async function refreshData(retriedJwt = false) {
