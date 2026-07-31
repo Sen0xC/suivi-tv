@@ -535,7 +535,7 @@ function calendarMonthPanel() {
         cell.classList.toggle("is-open", !wasOpen);
       });
     }
-    cell.append(el("strong", "", String(day)));
+    cell.append(el("strong", "month-day-number", String(day)));
     if (releases.length) {
       cell.append(el("i", "release-dot", ""));
       cell.append(calendarDayPopover(releases));
