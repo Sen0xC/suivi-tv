@@ -78,10 +78,14 @@ async function main() {
   token = userA.token;
   const friends = await api("/api/friends", {
     method: "POST",
-    body: JSON.stringify({ friendId: userB.user.id })
+    body: JSON.stringify({ friendId: userB.user.settings.friendCode })
   });
   assert(friends.social?.friends?.some((entry) => entry.friendId === userB.user.id), "friend add works");
+  token = userB.token;
+  const reciprocal = await api("/api/me");
+  assert(reciprocal.social?.friends?.some((entry) => entry.friendId === userA.user.id), "reciprocal friend add works");
 
+  token = userA.token;
   const profile = await api("/api/profile", {
     method: "PATCH",
     body: JSON.stringify({ name: "Smoke A Updated", settings: { bio: "Smoke profile" } })
