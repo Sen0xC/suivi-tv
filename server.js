@@ -752,6 +752,7 @@ function enrichItem(item, media) {
 
 function enrichSocial(db, userId = LOCAL_USER_ID) {
   const usersById = Object.fromEntries(db.users.map((user) => [user.id, user]));
+  const friendLibrary = db.friendLibrary || db.library || {};
   const lists = Object.values(db.lists || {})
     .filter((list) => list.userId === userId)
     .map((list) => ({
@@ -766,9 +767,29 @@ function enrichSocial(db, userId = LOCAL_USER_ID) {
       .filter((friendship) => friendship.userId === userId)
       .map((friendship) => ({
         ...friendship,
-        friend: usersById[friendship.friendId] || { id: friendship.friendId, name: friendship.friendId }
+        friend: {
+          ...(usersById[friendship.friendId] || { id: friendship.friendId, name: friendship.friendId }),
+          progress: friendProgress(friendship.friendId, friendLibrary, db.media)
+        }
       })),
     lists
+  };
+}
+
+function friendProgress(friendId, library, media) {
+  const items = Object.values(library || {}).filter((item) => item.userId === friendId);
+  const current = items
+    .filter((item) => item.status === "watching")
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
+  const favorite = items
+    .filter((item) => item.favorite)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
+  return {
+    total: items.length,
+    watching: items.filter((item) => item.status === "watching").length,
+    finished: items.filter((item) => item.status === "finished").length,
+    currentTitle: current ? media[dbKey(current.mediaType, current.tmdbId)]?.title || "" : "",
+    favoriteTitle: favorite ? media[dbKey(favorite.mediaType, favorite.tmdbId)]?.title || "" : ""
   };
 }
 
@@ -913,6 +934,10 @@ async function readSupabaseDb(userId = LOCAL_USER_ID) {
     supabaseOptional("/suivi_lists?select=*&user_id=eq." + encodeURIComponent(userId)),
     supabaseOptional("/suivi_list_items?select=*")
   ]);
+  const friendIds = friendshipRows.map((row) => row.friend_id).filter(Boolean);
+  const friendLibraryRows = friendIds.length
+    ? await supabaseOptional("/suivi_library?select=*&user_id=in.(" + friendIds.map(encodeURIComponent).join(",") + ")")
+    : [];
 
   const media = {};
   mediaRows.forEach((row) => {
@@ -922,6 +947,10 @@ async function readSupabaseDb(userId = LOCAL_USER_ID) {
   const library = {};
   libraryRows.forEach((row) => {
     library[dbKey(row.media_type, row.tmdb_id)] = fromLibraryRow(row);
+  });
+  const friendLibrary = {};
+  friendLibraryRows.forEach((row) => {
+    friendLibrary[`${row.user_id}:${row.media_type}:${row.tmdb_id}`] = fromLibraryRow(row);
   });
 
   const friendships = {};
@@ -946,6 +975,7 @@ async function readSupabaseDb(userId = LOCAL_USER_ID) {
     users: users.length ? users.map(fromUserRow) : [],
     media,
     library,
+    friendLibrary,
     friendships,
     lists,
     listItems

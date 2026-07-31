@@ -1,4 +1,4 @@
-const CACHE_NAME = "suivi-tv-v18";
+const CACHE_NAME = "suivi-tv-v20";
 const APP_SHELL = [
   "./",
   "./index.html",

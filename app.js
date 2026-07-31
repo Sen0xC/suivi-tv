@@ -96,6 +96,7 @@ const state = {
   query: "",
   suggestions: [],
   searchTimer: null,
+  calendarCursor: new Date(),
   loading: true,
   error: ""
 };
@@ -123,7 +124,7 @@ async function request(url, options = {}) {
   return data;
 }
 
-async function refreshData() {
+async function refreshData(retriedJwt = false) {
   state.loading = true;
   state.error = "";
   if (!state.authToken) {
@@ -138,14 +139,30 @@ async function refreshData() {
     state.explore = mergeExplore(trending.items, me.library);
     state.recommendations = mergeExplore(recommendations.items, me.library);
   } catch (error) {
+    if (isTransientJwtError(error) && !retriedJwt) {
+      await wait(900);
+      return refreshData(true);
+    }
+    if (isTransientJwtError(error)) {
+      localStorage.removeItem("suivi_session_token");
+      state.authToken = "";
+      state.error = "";
+      return;
+    }
     if (error.message === "Connexion requise") {
       localStorage.removeItem("suivi_session_token");
       state.authToken = "";
+      state.error = "";
+      return;
     }
     state.error = error.message;
   } finally {
     state.loading = false;
   }
+}
+
+function isTransientJwtError(error) {
+  return /JWT issued at future|PGRST303/i.test(error?.message || "");
 }
 
 function mergeExplore(items, library) {
@@ -164,6 +181,12 @@ function bindShell() {
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) {
       dialog.close();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".month-day.has-release")) {
+      document.querySelectorAll(".month-day.is-open").forEach((day) => day.classList.remove("is-open"));
     }
   });
 }
@@ -211,12 +234,13 @@ function renderHome() {
   const stale = state.library
     .filter((show) => show.user.status === "watching" && daysSince(show.user.updatedAt) >= 14)
     .sort((a, b) => new Date(a.user.updatedAt) - new Date(b.user.updatedAt));
-  const focusShow = watching.sort((a, b) => progressPercent(b) - progressPercent(a))[0] || state.library[0];
+  const carouselShows = [...watching].sort((a, b) => progressPercent(b) - progressPercent(a)).slice(0, 5);
+  const focusShows = carouselShows.length ? carouselShows : state.library.slice(0, 5);
 
   wrap.append(topbar(`Bonsoir ${state.user?.name || "Alex"}`, "Ton suivi est sauvegarde et tes prochaines series restent a portee de main."));
 
-  if (focusShow) {
-    wrap.append(heroCard(focusShow));
+  if (focusShows.length) {
+    wrap.append(heroCarousel(focusShows));
   } else {
     wrap.append(emptyView("Ajoute une serie ou un film pour commencer ton suivi."));
   }
@@ -303,7 +327,7 @@ function renderLibrary() {
 
 function renderExplore() {
   const wrap = el("section", "stagger explore-view");
-  wrap.append(topbar("Explorer", "Recherche dans TMDB pour ajouter series et films."));
+  wrap.append(topbar("Explorer", ""));
 
   const searchWrap = el("div", "search-wrap");
   const search = el("form", "search-box");
@@ -396,7 +420,7 @@ function renderSuggestions(container) {
 
 function renderCalendar() {
   const wrap = el("section", "stagger");
-  wrap.append(topbar("Calendrier", "Sorties connues pour les series suivies."));
+  wrap.append(topbar("Calendrier", ""));
   wrap.append(calendarMonthPanel());
   const panel = el("section", "panel");
   panel.append(el("h2", "section-title", "A venir"));
@@ -414,14 +438,32 @@ function renderCalendar() {
 function calendarMonthPanel() {
   const panel = el("section", "panel calendar-month-panel");
   const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth();
+  const cursor = state.calendarCursor || today;
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
   const releaseDays = upcomingDatesMap();
   const first = new Date(year, month, 1);
   const offset = (first.getDay() + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
-  panel.append(el("h2", "section-title", today.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })));
+  const head = el("div", "calendar-head");
+  const prev = el("button", "calendar-nav-button", "‹");
+  prev.type = "button";
+  prev.ariaLabel = "Mois precedent";
+  prev.addEventListener("click", () => {
+    state.calendarCursor = new Date(year, month - 1, 1);
+    render();
+  });
+  const next = el("button", "calendar-nav-button", "›");
+  next.type = "button";
+  next.ariaLabel = "Mois suivant";
+  next.addEventListener("click", () => {
+    state.calendarCursor = new Date(year, month + 1, 1);
+    render();
+  });
+  const monthTitle = el("h2", "calendar-title", cursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }));
+  head.append(prev, monthTitle, next);
+  panel.append(head);
   const grid = el("div", "month-grid");
   ["L", "M", "M", "J", "V", "S", "D"].forEach((day) => grid.append(el("span", "month-weekday", day)));
   for (let index = 0; index < offset; index += 1) {
@@ -429,11 +471,23 @@ function calendarMonthPanel() {
   }
   for (let day = 1; day <= daysInMonth; day += 1) {
     const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const count = releaseDays.get(key) || 0;
-    const cell = el("span", `month-day${count ? " has-release" : ""}${day === today.getDate() ? " is-today" : ""}`);
+    const releases = releaseDays.get(key) || [];
+    const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+    const cell = el(releases.length ? "button" : "span", `month-day${releases.length ? " has-release" : ""}${isToday ? " is-today" : ""}`);
+    if (releases.length) {
+      cell.type = "button";
+      cell.ariaLabel = `${releases.length} sortie${releases.length > 1 ? "s" : ""} le ${day}`;
+      cell.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const wasOpen = cell.classList.contains("is-open");
+        document.querySelectorAll(".month-day.is-open").forEach((entry) => entry.classList.remove("is-open"));
+        cell.classList.toggle("is-open", !wasOpen);
+      });
+    }
     cell.append(el("strong", "", String(day)));
-    if (count) {
-      cell.append(el("small", "", String(count)));
+    if (releases.length) {
+      cell.append(el("i", "release-dot", ""));
+      cell.append(calendarDayPopover(releases));
     }
     grid.append(cell);
   }
@@ -448,9 +502,32 @@ function upcomingDatesMap() {
       return acc;
     }
     const key = value.slice(0, 10);
-    acc.set(key, (acc.get(key) || 0) + 1);
+    const air = show.nextAirEpisode || { airDate: show.nextAir };
+    const events = acc.get(key) || [];
+    events.push({
+      title: show.title,
+      subtitle: airEpisodeLabel(air),
+      poster: air.still || show.poster || show.backdrop || "icons/icon.svg",
+      time: formatFrenchAirTime(value)
+    });
+    acc.set(key, events);
     return acc;
   }, new Map());
+}
+
+function calendarDayPopover(releases) {
+  const popover = el("div", "calendar-popover");
+  releases.forEach((release) => {
+    const item = el("div", "calendar-popover-item");
+    const image = document.createElement("img");
+    image.src = release.poster;
+    image.alt = "";
+    const text = el("span", "");
+    text.append(el("strong", "", release.title), el("small", "", release.subtitle));
+    item.append(image, text, el("em", "", release.time));
+    popover.append(item);
+  });
+  return popover;
 }
 
 function renderProfile() {
@@ -510,7 +587,6 @@ function profileHeaderPanel() {
   copy.append(el("span", "eyebrow", state.user?.settings?.isPrivate ? "Profil prive" : "Profil public"));
   copy.append(el("h2", "", state.user?.name || "Utilisateur"));
   copy.append(el("p", "subtitle", state.user?.settings?.bio || "Aucune bio pour le moment."));
-  copy.append(el("small", "", `Identifiant ami : ${state.user?.id || ""}`));
   copy.append(socialLinks(state.user?.settings?.links || {}));
 
   const actions = el("div", "profile-actions");
@@ -807,7 +883,20 @@ function profileInsight(label, value, helper) {
 function socialPanel() {
   const panel = el("section", "panel");
   panel.append(el("h2", "section-title", "Amis"));
-  panel.append(el("p", "subtitle", `Ton identifiant a partager : ${state.user?.id || "local-user"}`));
+  const share = el("div", "friend-code-card");
+  share.append(el("span", "", "Code ami"));
+  share.append(el("strong", "", shortFriendCode(state.user?.id || "local-user")));
+  const copy = el("button", "ghost-button", "Copier");
+  copy.type = "button";
+  copy.addEventListener("click", async () => {
+    await navigator.clipboard?.writeText(state.user?.id || "local-user");
+    copy.textContent = "Copie";
+    window.setTimeout(() => {
+      copy.textContent = "Copier";
+    }, 1400);
+  });
+  share.append(copy);
+  panel.append(share);
 
   const form = el("form", "inline-form");
   const idInput = document.createElement("input");
@@ -834,11 +923,34 @@ function socialPanel() {
   }
   state.social.friends.forEach((entry) => {
     const row = el("article", "social-row");
-    row.append(el("strong", "", entry.friend.name), el("span", "", entry.friend.id));
+    const progress = entry.friend.progress || {};
+    row.append(
+      el("strong", "", entry.friend.name),
+      el("span", "", `${progress.watching || 0} en cours - ${progress.finished || 0} terminees`),
+      el("small", "", friendActivityLabel(progress))
+    );
     list.append(row);
   });
   panel.append(list);
   return panel;
+}
+
+function shortFriendCode(value) {
+  const text = String(value || "");
+  if (text.length <= 12) {
+    return text;
+  }
+  return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+function friendActivityLabel(progress = {}) {
+  if (progress.currentTitle) {
+    return `Regarde ${progress.currentTitle}`;
+  }
+  if (progress.favoriteTitle) {
+    return `A aime ${progress.favoriteTitle}`;
+  }
+  return "Aucune activite partagee pour le moment";
 }
 
 function listsPanel() {
@@ -908,6 +1020,14 @@ function heroCard(show) {
   content.append(progressPanel(show, next));
   card.append(image, content);
   return card;
+}
+
+function heroCarousel(shows) {
+  const shell = el("section", "hero-carousel");
+  const rail = el("div", "hero-rail");
+  shows.forEach((show) => rail.append(heroCard(show)));
+  shell.append(rail);
+  return shell;
 }
 
 function progressPanel(show, next) {
