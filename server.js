@@ -526,11 +526,12 @@ function getAuthToken(req) {
 }
 
 function publicUser(user) {
+  const safeUser = ensureFriendCode(user);
   return {
-    id: user.id,
-    name: user.name,
-    settings: normalizeSettings(user.settings),
-    createdAt: user.createdAt
+    id: safeUser.id,
+    name: safeUser.name,
+    settings: normalizeSettings(safeUser.settings),
+    createdAt: safeUser.createdAt
   };
 }
 
@@ -540,6 +541,7 @@ function defaultSettings() {
     region: "FR",
     adultContent: false,
     notifications: false,
+    friendCode: "",
     bio: "",
     avatar: "",
     showStats: true,
@@ -561,6 +563,7 @@ function sanitizeProfileSettings(settings) {
     region: sanitizePublicText(normalized.region || "FR", 8) || "FR",
     adultContent: Boolean(normalized.adultContent),
     notifications: Boolean(normalized.notifications),
+    friendCode: sanitizeFriendCode(normalized.friendCode || ""),
     bio: sanitizePublicText(normalized.bio || "", 220),
     avatar: sanitizeAvatar(normalized.avatar || ""),
     showStats: normalized.showStats !== false,
@@ -586,6 +589,25 @@ function normalizeSettings(settings) {
       ...((parsed || {}).links || {})
     }
   };
+}
+
+function ensureFriendCode(user) {
+  const settings = normalizeSettings(user.settings);
+  if (settings.friendCode) {
+    return { ...user, settings };
+  }
+  const hash = crypto.createHash("sha1").update(user.id).digest("hex").slice(0, 6).toUpperCase();
+  return {
+    ...user,
+    settings: {
+      ...settings,
+      friendCode: `TV-${hash}`
+    }
+  };
+}
+
+function sanitizeFriendCode(value) {
+  return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 14);
 }
 
 function sanitizeLinks(links) {
@@ -757,7 +779,7 @@ function enrichItem(item, media) {
 }
 
 function enrichSocial(db, userId = LOCAL_USER_ID) {
-  const usersById = Object.fromEntries(db.users.map((user) => [user.id, user]));
+  const usersById = Object.fromEntries(db.users.map(ensureFriendCode).map((user) => [user.id, user]));
   const friendLibrary = db.friendLibrary || db.library || {};
   const lists = Object.values(db.lists || {})
     .filter((list) => list.userId === userId)
@@ -784,6 +806,13 @@ function enrichSocial(db, userId = LOCAL_USER_ID) {
 
 function friendProgress(friendId, library, media) {
   const items = Object.values(library || {}).filter((item) => item.userId === friendId);
+  const enriched = items
+    .map((item) => ({
+      ...item,
+      media: media[dbKey(item.mediaType, item.tmdbId)]
+    }))
+    .filter((item) => item.media)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
   const current = items
     .filter((item) => item.status === "watching")
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
@@ -793,9 +822,25 @@ function friendProgress(friendId, library, media) {
   return {
     total: items.length,
     watching: items.filter((item) => item.status === "watching").length,
+    planned: items.filter((item) => item.status === "planned").length,
     finished: items.filter((item) => item.status === "finished").length,
+    favorites: items.filter((item) => item.favorite).length,
     currentTitle: current ? media[dbKey(current.mediaType, current.tmdbId)]?.title || "" : "",
-    favoriteTitle: favorite ? media[dbKey(favorite.mediaType, favorite.tmdbId)]?.title || "" : ""
+    favoriteTitle: favorite ? media[dbKey(favorite.mediaType, favorite.tmdbId)]?.title || "" : "",
+    recent: enriched.slice(0, 4).map(friendMediaSummary),
+    library: enriched.slice(0, 12).map(friendMediaSummary)
+  };
+}
+
+function friendMediaSummary(item) {
+  return {
+    mediaType: item.mediaType,
+    tmdbId: item.tmdbId,
+    title: item.media.title,
+    poster: item.media.poster || item.media.backdrop || "",
+    status: item.status,
+    favorite: Boolean(item.favorite),
+    updatedAt: item.updatedAt
   };
 }
 
@@ -855,22 +900,23 @@ async function writeMediaCache(db) {
 }
 
 async function addFriend(userId, friendId, name) {
-  if (!friendId) {
+  const friendLookup = sanitizeFriendCode(friendId) || String(friendId || "").trim();
+  if (!friendLookup) {
     throw new Error("Code ami manquant");
-  }
-  if (friendId === userId) {
-    throw new Error("Tu ne peux pas t'ajouter toi-meme");
   }
 
   const db = await readDb(userId);
-  const friend = db.users.find((user) => user.id === friendId);
+  const friend = db.users.map(ensureFriendCode).find((user) => user.id === friendLookup || user.settings?.friendCode === friendLookup);
   if (!friend) {
     throw new Error("Aucun utilisateur ne correspond a ce code ami");
   }
+  if (friend.id === userId) {
+    throw new Error("Tu ne peux pas t'ajouter toi-meme");
+  }
   db.friendships = db.friendships || {};
   const createdAt = new Date().toISOString();
-  db.friendships[`${userId}:${friendId}`] = { userId, friendId, createdAt };
-  db.friendships[`${friendId}:${userId}`] = { userId: friendId, friendId: userId, createdAt };
+  db.friendships[`${userId}:${friend.id}`] = { userId, friendId: friend.id, createdAt };
+  db.friendships[`${friend.id}:${userId}`] = { userId: friend.id, friendId: userId, createdAt };
   await writeDb(db);
   return enrichSocial(db, userId);
 }
@@ -1111,25 +1157,26 @@ async function supabaseOptional(pathname, options = {}) {
 }
 
 function toUserRow(user) {
+  const safeUser = ensureFriendCode(user);
   return {
-    id: user.id,
-    email: user.email || null,
-    name: user.name,
-    password_hash: user.passwordHash || null,
-    settings: user.settings || defaultSettings(),
-    created_at: user.createdAt
+    id: safeUser.id,
+    email: safeUser.email || null,
+    name: safeUser.name,
+    password_hash: safeUser.passwordHash || null,
+    settings: safeUser.settings || defaultSettings(),
+    created_at: safeUser.createdAt
   };
 }
 
 function fromUserRow(row) {
-  return {
+  return ensureFriendCode({
     id: row.id,
     email: row.email || "",
     name: row.name,
     passwordHash: row.password_hash || "",
     settings: row.settings || defaultSettings(),
     createdAt: row.created_at
-  };
+  });
 }
 
 function toMediaRow(media) {

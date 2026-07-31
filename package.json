@@ -9,6 +9,7 @@
     "test:smoke": "node scripts/smoke-test.js"
   },
   "dependencies": {
-    "@supabase/server": "^1.4.1"
+    "@supabase/server": "^1.4.1",
+    "@vercel/analytics": "^2.0.1"
   }
 }
