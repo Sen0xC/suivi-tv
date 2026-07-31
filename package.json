@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check app.js && node --check server.js",
-    "health": "node -e \"fetch('http://localhost:4173/api/health').then(r=>r.json()).then(console.log)\""
+    "health": "node -e \"fetch('http://localhost:4173/api/health').then(r=>r.json()).then(console.log)\"",
+    "test:smoke": "node scripts/smoke-test.js"
   },
   "dependencies": {
     "@supabase/server": "^1.4.1"

@@ -96,6 +96,8 @@ const state = {
   query: "",
   suggestions: [],
   searchTimer: null,
+  heroIndex: 0,
+  heroTimer: null,
   calendarCursor: new Date(),
   loading: true,
   error: ""
@@ -191,9 +193,45 @@ function bindShell() {
   });
 }
 
+function startHeroAutoplay(count) {
+  window.clearInterval(state.heroTimer);
+  if (state.route !== "home" || count <= 1 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return;
+  }
+  state.heroTimer = window.setInterval(() => {
+    state.heroIndex = (state.heroIndex + 1) % count;
+    updateHeroCarousel();
+  }, 5200);
+}
+
+function updateHeroCarousel() {
+  const carousel = document.querySelector(".hero-carousel");
+  if (!carousel) {
+    return;
+  }
+  carousel.style.setProperty("--active-slide", String(state.heroIndex));
+  carousel.querySelectorAll(".hero-card").forEach((card, index) => {
+    card.classList.toggle("is-active", index === state.heroIndex);
+    card.setAttribute("aria-hidden", index === state.heroIndex ? "false" : "true");
+  });
+  carousel.querySelectorAll(".hero-dot").forEach((dot, index) => {
+    dot.classList.toggle("is-active", index === state.heroIndex);
+    dot.setAttribute("aria-current", index === state.heroIndex ? "true" : "false");
+  });
+}
+
+function setHeroSlide(index, count) {
+  state.heroIndex = (index + count) % count;
+  updateHeroCarousel();
+  startHeroAutoplay(count);
+}
+
 function render() {
   app.innerHTML = "";
   app.className = "app-view";
+  if (state.route !== "home") {
+    window.clearInterval(state.heroTimer);
+  }
 
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.route === state.route);
@@ -421,7 +459,7 @@ function renderSuggestions(container) {
 function renderCalendar() {
   const wrap = el("section", "stagger");
   wrap.append(topbar("Calendrier", ""));
-  wrap.append(calendarMonthPanel());
+  wrap.append(polishedCalendarMonthPanel());
   const panel = el("section", "panel");
   panel.append(el("h2", "section-title", "A venir"));
   const list = el("div", "calendar-list");
@@ -508,7 +546,7 @@ function upcomingDatesMap() {
       title: show.title,
       subtitle: airEpisodeLabel(air),
       poster: air.still || show.poster || show.backdrop || "icons/icon.svg",
-      time: formatFrenchAirTime(value)
+      time: releaseCountdown(value)
     });
     acc.set(key, events);
     return acc;
@@ -522,12 +560,99 @@ function calendarDayPopover(releases) {
     const image = document.createElement("img");
     image.src = release.poster;
     image.alt = "";
-    const text = el("span", "");
-    text.append(el("strong", "", release.title), el("small", "", release.subtitle));
-    item.append(image, text, el("em", "", release.time));
+    const text = el("span", "calendar-popover-copy");
+    text.append(el("strong", "", release.title), el("small", "", release.subtitle), el("em", "", release.time));
+    item.append(image, text);
     popover.append(item);
   });
   return popover;
+}
+
+function polishedCalendarMonthPanel() {
+  const panel = el("section", "panel calendar-month-panel");
+  const today = new Date();
+  const cursor = state.calendarCursor || today;
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const releaseDays = upcomingDatesMap();
+  const first = new Date(year, month, 1);
+  const offset = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const head = el("div", "calendar-head");
+  const prev = calendarNavButton("left", "Mois precedent", () => {
+    state.calendarCursor = new Date(year, month - 1, 1);
+    render();
+  });
+  const next = calendarNavButton("right", "Mois suivant", () => {
+    state.calendarCursor = new Date(year, month + 1, 1);
+    render();
+  });
+  const monthTitle = el("h2", "calendar-title", cursor.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }));
+  head.append(prev, monthTitle, next);
+  panel.append(head);
+
+  const grid = el("div", "month-grid");
+  ["L", "M", "M", "J", "V", "S", "D"].forEach((day) => grid.append(el("span", "month-weekday", day)));
+  for (let index = 0; index < offset; index += 1) {
+    grid.append(el("span", "month-day is-empty"));
+  }
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const releases = releaseDays.get(key) || [];
+    const isToday = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+    const cell = el(releases.length ? "button" : "span", `month-day${releases.length ? " has-release" : ""}${isToday ? " is-today" : ""}`);
+    if (releases.length) {
+      cell.type = "button";
+      cell.ariaLabel = `${releases.length} sortie${releases.length > 1 ? "s" : ""} le ${day}`;
+      cell.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const wasOpen = cell.classList.contains("is-open");
+        document.querySelectorAll(".month-day.is-open").forEach((entry) => entry.classList.remove("is-open"));
+        document.querySelectorAll(".month-day.is-suppressed").forEach((entry) => entry.classList.remove("is-suppressed"));
+        cell.classList.toggle("is-open", !wasOpen);
+        cell.classList.toggle("is-suppressed", wasOpen);
+        if (wasOpen) {
+          cell.blur();
+        }
+      });
+      cell.addEventListener("pointerleave", () => {
+        cell.classList.remove("is-suppressed");
+      });
+    }
+    cell.append(el("strong", "", String(day)));
+    if (releases.length) {
+      cell.append(el("i", "release-dot", ""));
+      cell.append(calendarDayPopover(releases));
+    }
+    grid.append(cell);
+  }
+  panel.append(grid);
+  return panel;
+}
+
+function calendarNavButton(direction, label, onClick) {
+  const button = el("button", "calendar-nav-button");
+  button.type = "button";
+  button.ariaLabel = label;
+  button.append(chevronIcon(direction));
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function chevronIcon(direction) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", direction === "left" ? "M14.5 6.8 9.3 12l5.2 5.2" : "m9.5 6.8 5.2 5.2-5.2 5.2");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("stroke-width", "2.4");
+  svg.append(path);
+  return svg;
 }
 
 function renderProfile() {
@@ -567,6 +692,8 @@ function renderProfile() {
   recentPanel.append(recentList);
   wrap.append(recentPanel);
 
+  wrap.append(socialPanel());
+  wrap.append(favoritesPanel());
   wrap.append(listsPanel());
   return wrap;
 }
@@ -900,18 +1027,15 @@ function socialPanel() {
 
   const form = el("form", "inline-form");
   const idInput = document.createElement("input");
-  idInput.placeholder = "Identifiant ami";
+  idInput.placeholder = "Coller le code ami";
   idInput.required = true;
-  const nameInput = document.createElement("input");
-  nameInput.placeholder = "Nom affiche";
   const submit = el("button", "primary-button", "Ajouter");
   submit.type = "submit";
-  form.append(idInput, nameInput, submit);
+  form.append(idInput, submit);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await api.addFriend(idInput.value.trim(), nameInput.value.trim());
+    await api.addFriend(idInput.value.trim(), "");
     idInput.value = "";
-    nameInput.value = "";
     await refreshData();
     render();
   });
@@ -975,11 +1099,44 @@ function listsPanel() {
   });
   panel.append(form);
 
-  const list = el("div", "social-list");
-  if (!state.social.lists.length) {
-    list.append(el("p", "empty", "Cree une liste pour regrouper tes coups de coeur, animes, classiques ou envies du moment."));
+  const seriesLists = state.social.lists.filter((entry) => listDominantType(entry) !== "movie");
+  const movieLists = state.social.lists.filter((entry) => listDominantType(entry) === "movie");
+  panel.append(listGroup("Series", seriesLists, "Cree une liste de series pour organiser tes envies."));
+  panel.append(listGroup("Films", movieLists, "Cree une liste de films pour separer tes watchlists."));
+  return panel;
+}
+
+function favoritesPanel() {
+  const panel = el("section", "panel favorites-panel");
+  panel.append(el("h2", "section-title", "Coups de coeur"));
+  const favorites = state.library.filter((show) => show.user?.favorite);
+  if (!favorites.length) {
+    panel.append(el("p", "empty", "Tes titres likes apparaitront automatiquement ici."));
+    return panel;
   }
-  state.social.lists.forEach((entry) => {
+  const grid = el("div", "favorite-grid");
+  favorites.forEach((show) => {
+    const card = el("button", "favorite-card");
+    card.type = "button";
+    const img = document.createElement("img");
+    img.src = show.poster || show.backdrop || "icons/icon.svg";
+    img.alt = "";
+    card.append(img, el("strong", "", show.title), el("span", "", mediaLabel(show)));
+    card.addEventListener("click", () => openShow(show));
+    grid.append(card);
+  });
+  panel.append(grid);
+  return panel;
+}
+
+function listGroup(title, lists, emptyText) {
+  const section = el("div", "list-group");
+  section.append(el("h3", "", title));
+  const list = el("div", "social-list");
+  if (!lists.length) {
+    list.append(el("p", "empty", emptyText));
+  }
+  lists.forEach((entry) => {
     const row = el("article", "list-card");
     row.append(el("strong", "", entry.name), el("span", "", `${entry.items.length} titre(s)`));
     if (entry.description) {
@@ -987,8 +1144,15 @@ function listsPanel() {
     }
     list.append(row);
   });
-  panel.append(list);
-  return panel;
+  section.append(list);
+  return section;
+}
+
+function listDominantType(list) {
+  const items = list.items || [];
+  const movies = items.filter((item) => item.mediaType === "movie").length;
+  const series = items.filter((item) => item.mediaType === "tv").length;
+  return movies > series ? "movie" : "tv";
 }
 
 async function runSearch() {
@@ -1023,10 +1187,45 @@ function heroCard(show) {
 }
 
 function heroCarousel(shows) {
+  state.heroIndex = Math.min(state.heroIndex, Math.max(shows.length - 1, 0));
   const shell = el("section", "hero-carousel");
+  shell.style.setProperty("--active-slide", String(state.heroIndex));
   const rail = el("div", "hero-rail");
-  shows.forEach((show) => rail.append(heroCard(show)));
+  shows.forEach((show, index) => {
+    const card = heroCard(show);
+    card.classList.toggle("is-active", index === state.heroIndex);
+    card.setAttribute("aria-hidden", index === state.heroIndex ? "false" : "true");
+    rail.append(card);
+  });
+  shell.addEventListener("pointerenter", () => window.clearInterval(state.heroTimer));
+  shell.addEventListener("pointerleave", () => startHeroAutoplay(shows.length));
   shell.append(rail);
+  if (shows.length > 1) {
+    const prev = el("button", "hero-arrow hero-arrow--prev");
+    prev.type = "button";
+    prev.ariaLabel = "Fiche precedente";
+    prev.append(chevronIcon("left"));
+    prev.addEventListener("click", () => setHeroSlide(state.heroIndex - 1, shows.length));
+    const next = el("button", "hero-arrow hero-arrow--next");
+    next.type = "button";
+    next.ariaLabel = "Fiche suivante";
+    next.append(chevronIcon("right"));
+    next.addEventListener("click", () => setHeroSlide(state.heroIndex + 1, shows.length));
+    const dots = el("div", "hero-dots");
+    shows.forEach((_, index) => {
+      const dot = el("button", index === state.heroIndex ? "hero-dot is-active" : "hero-dot", "");
+      dot.type = "button";
+      dot.ariaLabel = `Afficher la fiche ${index + 1}`;
+      dot.setAttribute("aria-current", index === state.heroIndex ? "true" : "false");
+      dot.addEventListener("click", () => {
+        setHeroSlide(index, shows.length);
+      });
+      dots.append(dot);
+    });
+    shell.append(prev, next);
+    shell.append(dots);
+  }
+  requestAnimationFrame(() => startHeroAutoplay(shows.length));
   return shell;
 }
 
@@ -1134,7 +1333,7 @@ function providerPanel(show) {
   const head = el("div", "section-head");
   head.append(el("h3", "section-title", "Ou regarder"));
   if (show.providers?.link) {
-    const link = el("a", "muted-link", "Voir l'offre");
+    const link = el("a", "provider-offer-link", "Voir l'offre");
     link.href = show.providers.link;
     link.target = "_blank";
     link.rel = "noreferrer";
@@ -1661,7 +1860,7 @@ function calendarRow(show) {
   text.append(el("div", "calendar-date", formatFrenchAirDate(air.airDate)));
   text.append(el("div", "row-title", show.title));
   text.append(el("div", "row-subtitle", airEpisodeLabel(air)));
-  row.append(thumb, text, el("span", "metric", formatFrenchAirTime(air.airDate)));
+  row.append(thumb, text, el("span", "metric", releaseCountdown(air.airDate)));
   return row;
 }
 
@@ -1698,6 +1897,27 @@ function formatFrenchAirTime(value) {
     minute: "2-digit",
     timeZone: "Europe/Paris"
   });
+}
+
+function releaseCountdown(value) {
+  if (!value) {
+    return "Date a venir";
+  }
+  const target = new Date(value.includes("T") ? value : `${value}T00:00:00`);
+  const diff = target.getTime() - Date.now();
+  if (diff <= 0) {
+    return "Disponible";
+  }
+  const minutes = Math.ceil(diff / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  if (days > 0) {
+    return hours > 0 ? `J-${days} ${hours}h` : `J-${days}`;
+  }
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+  return `${minutes}min`;
 }
 
 function topbar(title, subtitle) {

@@ -73,7 +73,7 @@ const fallbackDetails = {
 
 ensureLocalDb();
 
-const server = http.createServer(async (req, res) => {
+async function requestHandler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -86,20 +86,26 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     sendJson(res, error.statusCode || 500, normalizeServerError(error));
   }
-});
+}
 
-server.on("error", (error) => {
-  if (error.code === "EADDRINUSE") {
-    console.error(`Le port ${PORT} est deja utilise. Ferme l'autre serveur ou lance avec: $env:PORT=4174; npm start`);
-    process.exit(1);
-  }
-  throw error;
-});
+if (require.main === module) {
+  const server = http.createServer(requestHandler);
 
-server.listen(PORT, () => {
-  const storage = hasSupabaseConfig() ? "Supabase" : "base locale";
-  console.log(`Suivi TV disponible sur http://localhost:${PORT} (${storage})`);
-});
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(`Le port ${PORT} est deja utilise. Ferme l'autre serveur ou lance avec: $env:PORT=4174; npm start`);
+      process.exit(1);
+    }
+    throw error;
+  });
+
+  server.listen(PORT, () => {
+    const storage = hasSupabaseConfig() ? "Supabase" : "base locale";
+    console.log(`Suivi TV disponible sur http://localhost:${PORT} (${storage})`);
+  });
+}
+
+module.exports = requestHandler;
 
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/health") {
@@ -850,16 +856,21 @@ async function writeMediaCache(db) {
 
 async function addFriend(userId, friendId, name) {
   if (!friendId) {
-    throw new Error("Identifiant ami manquant");
+    throw new Error("Code ami manquant");
   }
   if (friendId === userId) {
     throw new Error("Tu ne peux pas t'ajouter toi-meme");
   }
 
   const db = await readDb(userId);
-  db.users.push(...(!db.users.some((user) => user.id === friendId) ? [{ id: friendId, name: name || friendId, createdAt: new Date().toISOString() }] : []));
+  const friend = db.users.find((user) => user.id === friendId);
+  if (!friend) {
+    throw new Error("Aucun utilisateur ne correspond a ce code ami");
+  }
   db.friendships = db.friendships || {};
-  db.friendships[`${userId}:${friendId}`] = { userId, friendId, createdAt: new Date().toISOString() };
+  const createdAt = new Date().toISOString();
+  db.friendships[`${userId}:${friendId}`] = { userId, friendId, createdAt };
+  db.friendships[`${friendId}:${userId}`] = { userId: friendId, friendId: userId, createdAt };
   await writeDb(db);
   return enrichSocial(db, userId);
 }

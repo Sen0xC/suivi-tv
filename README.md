@@ -16,7 +16,7 @@ L'app fonctionne comme une PWA : elle peut etre ouverte sur mobile, ajoutee a l'
 - Calendrier des sorties a venir avec dates francaises et episode diffuse.
 - Affichage des plateformes de visionnage quand TMDB / JustWatch les fournit.
 - Creation de listes personnelles de series et films.
-- Ajout d'amis par identifiant utilisateur.
+- Ajout d'amis par code ami avec relation reciproque automatique.
 - Profil avec statistiques, repartition, activite recente, amis et listes.
 - Sauvegarde utilisateur via Supabase.
 - Fallback local dans `data/database.json` si Supabase n'est pas configure.
@@ -138,6 +138,9 @@ SuiviTV/
   manifest.webmanifest    # Installation PWA
   sw.js                   # Service worker et cache
   supabase/schema.sql     # Schema Supabase complet
+  api/index.js            # Entrypoint Vercel pour les routes API
+  vercel.json             # Rewrites Vercel pour /api/*
+  scripts/smoke-test.js   # Test de parcours complet
   data/database.json      # Fallback local, ignore par Git
   icons/                  # Icones PWA
 ```
@@ -186,16 +189,94 @@ Sur iPhone :
 
 La webapp utilisera le manifest et le service worker pour se comporter davantage comme une app mobile.
 
+## Amis
+
+Chaque utilisateur possede un code ami visible dans son profil.
+
+Fonctionnement :
+
+- copie ton code ami depuis la page Profil ;
+- partage-le a un autre utilisateur ;
+- l'autre utilisateur colle ce code dans le champ `Coller le code ami` ;
+- si le code existe, la relation est creee automatiquement dans les deux sens.
+
+Un ami peut ensuite voir un resume simple de ton activite partagee : titres en cours, titres termines et dernier titre pertinent.
+
+Le systeme refuse :
+
+- un code vide ;
+- son propre code ;
+- un code qui ne correspond a aucun utilisateur.
+
+## Tests
+
+Verification syntaxique :
+
+```bash
+npm run check
+```
+
+Test smoke complet contre le serveur local :
+
+```bash
+npm start
+npm run test:smoke
+```
+
+Le test smoke cree des comptes temporaires et valide :
+
+- creation de compte ;
+- session utilisateur ;
+- recherche ;
+- ajout bibliotheque ;
+- favori ;
+- episode vu ;
+- creation de liste ;
+- ajout a une liste ;
+- ajout ami ;
+- edition du profil.
+
+Pour tester une URL de preview Vercel :
+
+```bash
+$env:SMOKE_BASE_URL="https://ton-url-vercel.vercel.app"
+npm run test:smoke
+```
+
 ## Deploiement
 
 Pour un usage personnel gratuit, Vercel est une option simple.
 
-Points a prevoir :
+Le projet contient deja :
 
-- Ajouter les variables `.env` dans les variables d'environnement Vercel.
-- Ne jamais publier `.env`.
-- Garder Supabase comme base de donnees distante.
-- Verifier que les routes Node de `server.js` sont adaptees au mode d'hebergement choisi.
+- `api/index.js` pour exposer le backend comme fonction Vercel ;
+- `vercel.json` pour router `/api/*` vers cette fonction ;
+- les fichiers statiques a la racine pour servir la PWA.
+
+Variables a ajouter dans Vercel > Project Settings > Environment Variables :
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` ou `SUPABASE_SECRET_KEY`
+- `TMDB_READ_ACCESS_TOKEN`
+- `TMDB_API_KEY` si tu utilises la cle API classique
+
+Etapes recommandees :
+
+1. Pousse le code sur GitHub.
+2. Va sur Vercel et choisis `Add New Project`.
+3. Importe `Sen0xC/suivi-tv`.
+4. Framework preset : `Other`.
+5. Build command : laisse vide ou `npm run check`.
+6. Output directory : laisse vide.
+7. Ajoute les variables d'environnement ci-dessus.
+8. Lance le deploy.
+9. Teste l'URL Vercel avec `SMOKE_BASE_URL`.
+
+Important :
+
+- ne jamais publier `.env` ;
+- executer `supabase/schema.sql` dans Supabase avant le premier deploy ;
+- redeployer apres chaque changement de variable d'environnement.
 
 ## Publier sur GitHub
 
@@ -216,7 +297,7 @@ git commit -m "Initial commit"
 Ensuite, cree un nouveau depot vide sur GitHub, puis relie-le :
 
 ```bash
-git remote add origin https://github.com/TON-PSEUDO/suivi-tv.git
+git remote add origin https://github.com/Sen0xC/suivi-tv.git
 git branch -M main
 git push -u origin main
 ```
