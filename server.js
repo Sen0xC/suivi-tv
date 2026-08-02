@@ -721,6 +721,7 @@ async function updateLibraryItem(userId, mediaType, tmdbId, patch) {
   const db = await readDb(userId);
   const key = dbKey(mediaType, tmdbId);
   const item = db.library[key];
+  const media = db.media[key];
   if (!item) {
     throw new Error("Element absent de la bibliotheque");
   }
@@ -734,9 +735,35 @@ async function updateLibraryItem(userId, mediaType, tmdbId, patch) {
   if (typeof patch.favorite === "boolean") {
     item.favorite = patch.favorite;
   }
+  item.status = normalizedLibraryStatus(item, media);
   item.updatedAt = new Date().toISOString();
   await writeDb(db);
   return enrichItem(item, db.media[key]);
+}
+
+function normalizedLibraryStatus(item, media) {
+  if (!media) {
+    return item.status;
+  }
+  if (item.mediaType === "movie") {
+    return item.watched?.complete ? "finished" : item.status;
+  }
+  const watched = watchedEpisodeCount(media, item.watched);
+  const total = (media.seasons || []).reduce((sum, count) => sum + count, 0);
+  if (total > 0 && watched >= total) {
+    return "finished";
+  }
+  if (watched > 0 && item.status === "planned") {
+    return "watching";
+  }
+  return item.status;
+}
+
+function watchedEpisodeCount(media, watched = {}) {
+  if (!watched.season || !watched.episode) {
+    return 0;
+  }
+  return (media.seasons || []).slice(0, watched.season - 1).reduce((sum, count) => sum + count, 0) + watched.episode;
 }
 
 async function removeLibraryItem(userId, mediaType, tmdbId) {

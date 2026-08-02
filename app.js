@@ -1336,7 +1336,9 @@ function friendActivityLabel(progress = {}) {
 
 function listsPanel() {
   const panel = el("section", "panel");
-  panel.append(el("h2", "section-title", "Listes"));
+  const head = el("div", "panel-headline");
+  head.append(el("h2", "section-title", "Listes"), el("span", "panel-hint", "Auto + perso"));
+  panel.append(head);
   const form = el("form", "inline-form");
   const nameInput = document.createElement("input");
   nameInput.placeholder = "Nom de la liste";
@@ -1356,10 +1358,11 @@ function listsPanel() {
   });
   panel.append(form);
 
-  const seriesLists = state.social.lists.filter((entry) => listDominantType(entry) !== "movie");
-  const movieLists = state.social.lists.filter((entry) => listDominantType(entry) === "movie");
-  panel.append(listGroup("Series", seriesLists, "Cree une liste de series pour organiser tes envies."));
-  panel.append(listGroup("Films", movieLists, "Cree une liste de films pour separer tes watchlists."));
+  panel.append(autoMediaGroup("Series", state.library.filter((item) => item.mediaType === "tv"), "Tes series ajoutees apparaitront automatiquement ici."));
+  panel.append(autoMediaGroup("Films", state.library.filter((item) => item.mediaType === "movie"), "Tes films ajoutes apparaitront automatiquement ici."));
+
+  const customLists = [...state.social.lists].sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+  panel.append(listGroup("Listes perso recentes", customLists, "Cree une liste personnalisee pour organiser tes envies."));
   return panel;
 }
 
@@ -1388,12 +1391,12 @@ function favoritesPanel() {
 
 function listGroup(title, lists, emptyText) {
   const section = el("div", "list-group");
-  section.append(el("h3", "", title));
+  section.append(listGroupHeader(title, lists.length, lists.length > 3 ? () => openListCollection(title, lists, "list") : null));
   const list = el("div", "social-list");
   if (!lists.length) {
     list.append(el("p", "empty", emptyText));
   }
-  lists.forEach((entry) => {
+  lists.slice(0, 3).forEach((entry) => {
     const row = el("article", "list-card");
     row.append(el("strong", "", entry.name), el("span", "", `${entry.items.length} titre(s)`));
     if (entry.description) {
@@ -1403,6 +1406,66 @@ function listGroup(title, lists, emptyText) {
   });
   section.append(list);
   return section;
+}
+
+function autoMediaGroup(title, items, emptyText) {
+  const sorted = [...items].sort((a, b) => new Date(b.user?.updatedAt || b.user?.addedAt || 0) - new Date(a.user?.updatedAt || a.user?.addedAt || 0));
+  const section = el("div", "list-group");
+  section.append(listGroupHeader(title, sorted.length, sorted.length > 4 ? () => openListCollection(title, sorted, "media") : null));
+  const list = el("div", "auto-list-grid");
+  if (!sorted.length) {
+    list.append(el("p", "empty", emptyText));
+  }
+  sorted.slice(0, 4).forEach((item) => list.append(autoMediaCard(item)));
+  section.append(list);
+  return section;
+}
+
+function listGroupHeader(title, count, onViewAll) {
+  const head = el("div", "list-group-head");
+  head.append(el("h3", "", title), el("span", "", `${count}`));
+  if (onViewAll) {
+    const button = el("button", "text-button", "Tout voir");
+    button.type = "button";
+    button.addEventListener("click", onViewAll);
+    head.append(button);
+  }
+  return head;
+}
+
+function autoMediaCard(item) {
+  const card = el("button", "auto-media-card");
+  card.type = "button";
+  const img = document.createElement("img");
+  img.src = item.poster || item.backdrop || "icons/icon.svg";
+  img.alt = "";
+  const copy = el("span", "auto-media-copy");
+  copy.append(el("strong", "", item.title), el("small", "", item.user?.status === "finished" ? "Terminee" : statusLabels[item.user?.status] || mediaLabel(item)));
+  card.append(img, copy);
+  card.addEventListener("click", () => openShow(item));
+  return card;
+}
+
+function openListCollection(title, items, type) {
+  dialogContent.innerHTML = "";
+  const panel = el("section", "profile-editor collection-dialog");
+  panel.append(el("h2", "section-title", title));
+  const list = el("div", type === "media" ? "auto-list-grid auto-list-grid--full" : "social-list");
+  items.forEach((item) => {
+    list.append(type === "media" ? autoMediaCard(item) : customListCard(item));
+  });
+  panel.append(list);
+  dialogContent.append(panel);
+  dialog.showModal();
+}
+
+function customListCard(entry) {
+  const row = el("article", "list-card");
+  row.append(el("strong", "", entry.name), el("span", "", `${entry.items.length} titre(s)`));
+  if (entry.description) {
+    row.append(el("small", "", entry.description));
+  }
+  return row;
 }
 
 function listDominantType(list) {
