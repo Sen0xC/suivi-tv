@@ -109,6 +109,7 @@ async function init() {
   bindShell();
   await refreshData();
   render();
+  loadDiscoveryData();
 }
 
 async function request(url, options = {}) {
@@ -147,12 +148,12 @@ async function refreshData(retriedJwt = false) {
     return;
   }
   try {
-    const [me, trending, recommendations] = await Promise.all([api.me(), api.trending(), api.recommendations()]);
+    const me = await api.me();
     state.user = me.user;
     state.library = me.library;
     state.social = me.social || { friends: [], lists: [] };
-    state.explore = mergeExplore(trending.items, me.library);
-    state.recommendations = mergeExplore(recommendations.items, me.library);
+    state.explore = mergeExplore(state.explore, me.library);
+    state.recommendations = mergeExplore(state.recommendations, me.library);
   } catch (error) {
     if (isTransientJwtError(error) && !retriedJwt) {
       await wait(900);
@@ -173,6 +174,22 @@ async function refreshData(retriedJwt = false) {
     state.error = error.message;
   } finally {
     state.loading = false;
+  }
+}
+
+async function loadDiscoveryData() {
+  if (!state.authToken) {
+    return;
+  }
+
+  try {
+    const [trending, recommendations] = await Promise.all([api.trending(), api.recommendations()]);
+    state.explore = mergeExplore(trending.items, state.library);
+    state.recommendations = mergeExplore(recommendations.items, state.library);
+    render();
+  } catch (error) {
+    // Discovery is non-critical: the home page must stay usable even if TMDB is slow.
+    console.warn("Chargement des suggestions ignore:", error.message);
   }
 }
 
@@ -343,6 +360,7 @@ function renderAuth() {
       state.error = "";
       await refreshData();
       render();
+      loadDiscoveryData();
     } catch (error) {
       state.error = error.message;
       render();
@@ -1259,8 +1277,6 @@ function listDominantType(list) {
 }
 
 async function runSearch() {
-  state.loading = true;
-  render();
   try {
     const data = state.query.trim() ? await api.search(state.query) : await api.trending();
     state.explore = mergeExplore(data.items, state.library);
@@ -1268,7 +1284,6 @@ async function runSearch() {
   } catch (error) {
     state.error = error.message;
   } finally {
-    state.loading = false;
     render();
   }
 }

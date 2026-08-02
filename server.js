@@ -15,6 +15,10 @@ const IMAGE_BASE = "https://image.tmdb.org/t/p/";
 const LOCAL_USER_ID = process.env.APP_USER_ID || "local-user";
 const LOCAL_USER_NAME = process.env.APP_USER_NAME || "Alex";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const TRENDING_CACHE_TTL_MS = 1000 * 60 * 10;
+const UPCOMING_REFRESH_TTL_MS = 1000 * 60 * 60 * 6;
+const memoryCache = new Map();
+const upcomingRefreshCache = new Map();
 
 const fallbackCatalog = [
   { mediaType: "tv", tmdbId: 100088, title: "The Last of Us", year: 2023 },
@@ -155,7 +159,7 @@ async function handleApi(req, res, url) {
     const sessionUser = await requireSession(req);
     const db = await readDb(sessionUser.id);
     await ensureUser(db, sessionUser);
-    await refreshUpcomingAirData(db);
+    scheduleUpcomingAirRefresh(sessionUser.id, db);
     sendJson(res, 200, { user: sessionUser, library: enrichLibrary(db), social: enrichSocial(db, sessionUser.id) });
     return;
   }
@@ -250,11 +254,25 @@ async function handleApi(req, res, url) {
 
 async function getTrending() {
   if (hasTmdbAuth()) {
-    const data = await tmdb("/trending/all/week", { language: "fr-FR" });
-    return data.results.filter(isSupportedMedia).slice(0, 18).map(normalizeSearchResult);
+    return cached("trending:all:week:fr-FR", TRENDING_CACHE_TTL_MS, async () => {
+      const data = await tmdb("/trending/all/week", { language: "fr-FR" });
+      return data.results.filter(isSupportedMedia).slice(0, 18).map(normalizeSearchResult);
+    });
   }
 
   return fallbackCatalog.map((item) => normalizeFallback(item));
+}
+
+async function cached(key, ttlMs, producer) {
+  const now = Date.now();
+  const hit = memoryCache.get(key);
+  if (hit && hit.expiresAt > now) {
+    return hit.value;
+  }
+
+  const value = await producer();
+  memoryCache.set(key, { value, expiresAt: now + ttlMs });
+  return value;
 }
 
 async function searchMedia(query) {
@@ -881,6 +899,24 @@ async function refreshUpcomingAirData(db) {
   if (changed) {
     await writeMediaCache(db);
   }
+}
+
+function scheduleUpcomingAirRefresh(userId, db) {
+  if (!hasTmdbAuth()) {
+    return;
+  }
+
+  const now = Date.now();
+  const nextAllowedAt = upcomingRefreshCache.get(userId) || 0;
+  if (nextAllowedAt > now) {
+    return;
+  }
+
+  upcomingRefreshCache.set(userId, now + UPCOMING_REFRESH_TTL_MS);
+  refreshUpcomingAirData(db).catch((error) => {
+    upcomingRefreshCache.delete(userId);
+    console.warn("Refresh sorties ignore:", error.message);
+  });
 }
 
 async function writeMediaCache(db) {
