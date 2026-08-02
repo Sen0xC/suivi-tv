@@ -73,6 +73,8 @@ const api = {
   }
 };
 
+const DEFAULT_ACCENT_COLOR = "#8df071";
+
 const statusLabels = {
   watching: "En cours",
   planned: "A regarder",
@@ -106,6 +108,7 @@ const state = {
 init();
 
 async function init() {
+  applyUserTheme();
   bindShell();
   await refreshData();
   render();
@@ -154,6 +157,7 @@ async function refreshData(retriedJwt = false) {
     state.social = me.social || { friends: [], lists: [] };
     state.explore = mergeExplore(state.explore, me.library);
     state.recommendations = mergeExplore(state.recommendations, me.library);
+    applyUserTheme(state.user?.settings);
   } catch (error) {
     if (isTransientJwtError(error) && !retriedJwt) {
       await wait(900);
@@ -175,6 +179,57 @@ async function refreshData(retriedJwt = false) {
   } finally {
     state.loading = false;
   }
+}
+
+function applyUserTheme(settings = {}) {
+  applyAccentColor(settings.accentColor || localStorage.getItem("suivi_accent_color") || DEFAULT_ACCENT_COLOR);
+}
+
+function applyAccentColor(value) {
+  const accent = normalizeAccentColor(value);
+  const secondary = mixHex(accent, "#f2e94e", 0.48);
+  const root = document.documentElement;
+  root.style.setProperty("--acid", accent);
+  root.style.setProperty("--volt", secondary);
+  root.style.setProperty("--accent-a06", alphaColor(accent, 0.06));
+  root.style.setProperty("--accent-a08", alphaColor(accent, 0.08));
+  root.style.setProperty("--accent-a10", alphaColor(accent, 0.1));
+  root.style.setProperty("--accent-a12", alphaColor(accent, 0.12));
+  root.style.setProperty("--accent-a14", alphaColor(accent, 0.14));
+  root.style.setProperty("--accent-a18", alphaColor(accent, 0.18));
+  root.style.setProperty("--accent-a22", alphaColor(accent, 0.22));
+  root.style.setProperty("--accent-a28", alphaColor(accent, 0.28));
+  root.style.setProperty("--accent-a32", alphaColor(accent, 0.32));
+  root.style.setProperty("--accent-a62", alphaColor(accent, 0.62));
+  root.style.setProperty("--accent-strong-a22", alphaColor(secondary, 0.22));
+  root.style.setProperty("--accent-strong-a26", alphaColor(secondary, 0.26));
+  localStorage.setItem("suivi_accent_color", accent);
+}
+
+function normalizeAccentColor(value) {
+  const clean = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(clean) ? clean.toLowerCase() : DEFAULT_ACCENT_COLOR;
+}
+
+function alphaColor(hex, alpha) {
+  const rgb = hexToRgb(hex);
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+}
+
+function mixHex(from, to, ratio) {
+  const a = hexToRgb(from);
+  const b = hexToRgb(to);
+  const mix = (x, y) => Math.round(x + (y - x) * ratio);
+  return `#${[mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b)].map((part) => part.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function hexToRgb(hex) {
+  const value = normalizeAccentColor(hex).slice(1);
+  return {
+    r: parseInt(value.slice(0, 2), 16),
+    g: parseInt(value.slice(2, 4), 16),
+    b: parseInt(value.slice(4, 6), 16)
+  };
 }
 
 async function loadDiscoveryData() {
@@ -790,6 +845,12 @@ function openProfileEditor() {
   bio.placeholder = "Bio publique";
   bio.maxLength = 220;
   bio.value = state.user?.settings?.bio || "";
+  const themeLabel = el("label", "theme-picker");
+  const themeText = el("span", "", "Couleur de l'app");
+  const accentColor = document.createElement("input");
+  accentColor.type = "color";
+  accentColor.value = normalizeAccentColor(state.user?.settings?.accentColor || DEFAULT_ACCENT_COLOR);
+  themeLabel.append(themeText, accentColor);
   const privacyLabel = el("label", "check-line");
   const isPrivate = document.createElement("input");
   isPrivate.type = "checkbox";
@@ -808,6 +869,10 @@ function openProfileEditor() {
   const website = socialInput("Site web", state.user?.settings?.links?.website);
   const submit = el("button", "primary-button", "Enregistrer");
   submit.type = "submit";
+
+  accentColor.addEventListener("input", () => {
+    applyAccentColor(accentColor.value);
+  });
 
   file.addEventListener("change", async () => {
     const selected = file.files?.[0];
@@ -835,7 +900,7 @@ function openProfileEditor() {
     }
   });
 
-  form.append(preview, file, crop.root, feedback, name, bio, privacyLabel, showStatsLabel, linksTitle, instagram, x, tiktok, letterboxd, website, submit);
+  form.append(preview, file, crop.root, feedback, name, bio, themeLabel, privacyLabel, showStatsLabel, linksTitle, instagram, x, tiktok, letterboxd, website, submit);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const result = await api.updateProfile({
@@ -843,6 +908,7 @@ function openProfileEditor() {
       settings: {
         bio: bio.value,
         avatar: avatarValue,
+        accentColor: accentColor.value,
         showStats: showStats.checked,
         isPrivate: isPrivate.checked,
         links: {

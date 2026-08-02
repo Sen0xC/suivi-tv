@@ -562,6 +562,7 @@ function defaultSettings() {
     friendCode: "",
     bio: "",
     avatar: "",
+    accentColor: "#8df071",
     showStats: true,
     isPrivate: false,
     links: {
@@ -584,6 +585,7 @@ function sanitizeProfileSettings(settings) {
     friendCode: sanitizeFriendCode(normalized.friendCode || ""),
     bio: sanitizePublicText(normalized.bio || "", 220),
     avatar: sanitizeAvatar(normalized.avatar || ""),
+    accentColor: sanitizeAccentColor(normalized.accentColor || "#8df071"),
     showStats: normalized.showStats !== false,
     isPrivate: Boolean(normalized.isPrivate),
     links: sanitizeLinks(normalized.links || {})
@@ -626,6 +628,11 @@ function ensureFriendCode(user) {
 
 function sanitizeFriendCode(value) {
   return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 14);
+}
+
+function sanitizeAccentColor(value) {
+  const clean = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(clean) ? clean.toLowerCase() : "#8df071";
 }
 
 function sanitizeLinks(links) {

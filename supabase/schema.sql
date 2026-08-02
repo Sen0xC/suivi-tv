@@ -3,14 +3,14 @@ create table if not exists public.suivi_users (
   email text unique,
   name text not null,
   password_hash text,
-  settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"friendCode":"","bio":"","avatar":"","showStats":true,"isPrivate":false,"links":{"instagram":"","x":"","tiktok":"","letterboxd":"","website":""}}'::jsonb,
+  settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"friendCode":"","bio":"","avatar":"","accentColor":"#8df071","showStats":true,"isPrivate":false,"links":{"instagram":"","x":"","tiktok":"","letterboxd":"","website":""}}'::jsonb,
   created_at timestamptz not null default now()
 );
 
 alter table public.suivi_users
   add column if not exists email text,
   add column if not exists password_hash text,
-  add column if not exists settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"friendCode":"","bio":"","avatar":"","showStats":true,"isPrivate":false,"links":{"instagram":"","x":"","tiktok":"","letterboxd":"","website":""}}'::jsonb;
+  add column if not exists settings jsonb not null default '{"locale":"fr-FR","region":"FR","adultContent":false,"notifications":false,"friendCode":"","bio":"","avatar":"","accentColor":"#8df071","showStats":true,"isPrivate":false,"links":{"instagram":"","x":"","tiktok":"","letterboxd":"","website":""}}'::jsonb;
 
 create unique index if not exists suivi_users_email_unique
   on public.suivi_users(email)
