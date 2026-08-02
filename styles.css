@@ -1843,6 +1843,14 @@ button:focus-visible {
 }
 
 .settings-editor {
+  width: min(100%, 760px);
+  max-width: 760px;
+  gap: 18px;
+}
+
+.settings-header {
+  display: grid;
+  gap: 8px;
   max-width: 620px;
 }
 
@@ -1850,6 +1858,11 @@ button:focus-visible {
   color: var(--muted);
   font-size: 0.94rem;
   line-height: 1.45;
+}
+
+.settings-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
 }
 
 .settings-row {
@@ -1863,6 +1876,20 @@ button:focus-visible {
     linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.028)),
     rgba(255, 255, 255, 0.045);
   box-shadow: var(--ring);
+}
+
+.theme-picker,
+.settings-row--select,
+.settings-row--info,
+.settings-form .primary-button {
+  grid-column: 1 / -1;
+}
+
+.settings-row--info {
+  background:
+    radial-gradient(circle at 100% 0, var(--accent-a12), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.025)),
+    rgba(255, 255, 255, 0.04);
 }
 
 .settings-row-copy {
@@ -1927,6 +1954,20 @@ button:focus-visible {
 .settings-row--select .status-select {
   min-width: 150px;
   height: 44px;
+}
+
+.settings-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: var(--accent-a12);
+  color: var(--acid);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .profile-form textarea {
@@ -2871,6 +2912,15 @@ button:focus-visible {
   .theme-picker {
     border-radius: 18px;
     padding: 12px;
+  }
+
+  .settings-editor {
+    width: 100%;
+    max-width: none;
+  }
+
+  .settings-form {
+    grid-template-columns: 1fr;
   }
 
   .settings-row {

@@ -914,11 +914,12 @@ function openProfileEditor() {
 function openSettingsEditor() {
   dialogContent.innerHTML = "";
   const panel = el("section", "profile-editor settings-editor");
-  panel.append(el("h2", "section-title", "Parametres"));
-  panel.append(el("p", "settings-help", "Ces preferences restent liees a ton compte et s'appliquent a toute la webapp."));
+  const header = el("div", "settings-header");
+  header.append(el("h2", "section-title", "Parametres"), el("p", "settings-help", "Tes preferences restent liees a ton compte et s'appliquent a toute la webapp."));
+  panel.append(header);
 
   const settings = state.user?.settings || {};
-  const form = el("form", "profile-form");
+  const form = el("form", "profile-form settings-form");
 
   const themeLabel = el("label", "theme-picker");
   const themeText = el("span", "", "Couleur principale");
@@ -937,7 +938,7 @@ function openSettingsEditor() {
 
   const privacyLabel = settingToggle("Profil prive", "Seuls tes amis peuvent voir ta bibliotheque et ton activite.", Boolean(settings.isPrivate));
   const showStatsLabel = settingToggle("Afficher mes statistiques", "Montre tes stats sur ton profil public/ami.", settings.showStats !== false);
-  const notificationsLabel = settingToggle("Rappels de sorties", "Prepare l'app pour les rappels de nouveaux episodes.", Boolean(settings.notifications));
+  const notificationsInfo = settingInfo("Rappels de sorties", "Les notifications push ne sont pas encore activees. L'option sera branchee plus tard avec les permissions iOS/Android.", "Bientot");
   const adultLabel = settingToggle("Inclure le contenu adulte", "Autorise ce contenu dans la recherche TMDB.", Boolean(settings.adultContent));
 
   const submit = el("button", "primary-button", "Enregistrer les parametres");
@@ -947,7 +948,7 @@ function openSettingsEditor() {
     applyAccentColor(accentColor.value);
   });
 
-  form.append(themeLabel, region.label, privacyLabel.label, showStatsLabel.label, notificationsLabel.label, adultLabel.label, submit);
+  form.append(themeLabel, region.label, privacyLabel.label, showStatsLabel.label, notificationsInfo, adultLabel.label, submit);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const result = await api.updateProfile({
@@ -956,7 +957,7 @@ function openSettingsEditor() {
         region: region.input.value,
         isPrivate: privacyLabel.input.checked,
         showStats: showStatsLabel.input.checked,
-        notifications: notificationsLabel.input.checked,
+        notifications: false,
         adultContent: adultLabel.input.checked
       }
     });
@@ -981,6 +982,14 @@ function settingToggle(title, helper, checked) {
   input.checked = checked;
   label.append(copy, input);
   return { label, input };
+}
+
+function settingInfo(title, helper, badge) {
+  const row = el("div", "settings-row settings-row--info");
+  const copy = el("span", "settings-row-copy");
+  copy.append(el("strong", "", title), el("small", "", helper));
+  row.append(copy, el("span", "settings-badge", badge));
+  return row;
 }
 
 function settingSelect(title, options, value) {
