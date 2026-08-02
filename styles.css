@@ -1842,6 +1842,93 @@ button:focus-visible {
   cursor: pointer;
 }
 
+.settings-editor {
+  max-width: 620px;
+}
+
+.settings-help {
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1.45;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border-radius: 20px;
+  padding: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.028)),
+    rgba(255, 255, 255, 0.045);
+  box-shadow: var(--ring);
+}
+
+.settings-row-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-row-copy strong {
+  color: var(--ink);
+  font-size: 0.96rem;
+}
+
+.settings-row-copy small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.settings-row input[type="checkbox"] {
+  width: 46px;
+  min-width: 46px;
+  height: 28px;
+  appearance: none;
+  border-radius: 999px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 1px 4px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+  transition-property: background-color, box-shadow;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.settings-row input[type="checkbox"]::before {
+  display: block;
+  width: 22px;
+  height: 22px;
+  margin: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+  content: "";
+  transition-property: transform, background-color;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.settings-row input[type="checkbox"]:checked {
+  background: linear-gradient(95deg, var(--acid), var(--volt));
+  box-shadow:
+    0 10px 22px var(--accent-a18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.settings-row input[type="checkbox"]:checked::before {
+  background: #10130b;
+  transform: translateX(18px);
+}
+
+.settings-row--select .status-select {
+  min-width: 150px;
+  height: 44px;
+}
+
 .profile-form textarea {
   min-height: 120px;
   resize: vertical;
@@ -2668,6 +2755,25 @@ button:focus-visible {
   .suggestion-list {
     width: 100%;
     max-height: 46vh;
+  }
+
+  .settings-row,
+  .theme-picker {
+    border-radius: 18px;
+    padding: 12px;
+  }
+
+  .settings-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .settings-row--select {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-row--select .status-select {
+    width: 100%;
+    min-width: 0;
   }
 
   .series-dialog {

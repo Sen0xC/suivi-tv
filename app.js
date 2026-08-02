@@ -806,6 +806,9 @@ function profileHeaderPanel() {
   const edit = el("button", "primary-button", "Modifier le profil");
   edit.type = "button";
   edit.addEventListener("click", () => openProfileEditor());
+  const settings = el("button", "ghost-button", "Parametres");
+  settings.type = "button";
+  settings.addEventListener("click", () => openSettingsEditor());
   const logout = el("button", "ghost-button", "Se deconnecter");
   logout.type = "button";
   logout.addEventListener("click", async () => {
@@ -817,7 +820,7 @@ function profileHeaderPanel() {
     state.social = { friends: [], lists: [] };
     render();
   });
-  actions.append(edit, logout);
+  actions.append(edit, settings, logout);
   panel.append(avatar, copy, actions);
   return panel;
 }
@@ -845,22 +848,6 @@ function openProfileEditor() {
   bio.placeholder = "Bio publique";
   bio.maxLength = 220;
   bio.value = state.user?.settings?.bio || "";
-  const themeLabel = el("label", "theme-picker");
-  const themeText = el("span", "", "Couleur de l'app");
-  const accentColor = document.createElement("input");
-  accentColor.type = "color";
-  accentColor.value = normalizeAccentColor(state.user?.settings?.accentColor || DEFAULT_ACCENT_COLOR);
-  themeLabel.append(themeText, accentColor);
-  const privacyLabel = el("label", "check-line");
-  const isPrivate = document.createElement("input");
-  isPrivate.type = "checkbox";
-  isPrivate.checked = Boolean(state.user?.settings?.isPrivate);
-  privacyLabel.append(isPrivate, el("span", "", "Mettre mon profil en prive"));
-  const showStatsLabel = el("label", "check-line");
-  const showStats = document.createElement("input");
-  showStats.type = "checkbox";
-  showStats.checked = state.user?.settings?.showStats !== false;
-  showStatsLabel.append(showStats, el("span", "", "Afficher mes statistiques sur mon profil"));
   const linksTitle = el("div", "section-title", "Reseaux");
   const instagram = socialInput("Instagram", state.user?.settings?.links?.instagram);
   const x = socialInput("X / Twitter", state.user?.settings?.links?.x);
@@ -869,10 +856,6 @@ function openProfileEditor() {
   const website = socialInput("Site web", state.user?.settings?.links?.website);
   const submit = el("button", "primary-button", "Enregistrer");
   submit.type = "submit";
-
-  accentColor.addEventListener("input", () => {
-    applyAccentColor(accentColor.value);
-  });
 
   file.addEventListener("change", async () => {
     const selected = file.files?.[0];
@@ -900,7 +883,7 @@ function openProfileEditor() {
     }
   });
 
-  form.append(preview, file, crop.root, feedback, name, bio, themeLabel, privacyLabel, showStatsLabel, linksTitle, instagram, x, tiktok, letterboxd, website, submit);
+  form.append(preview, file, crop.root, feedback, name, bio, linksTitle, instagram, x, tiktok, letterboxd, website, submit);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const result = await api.updateProfile({
@@ -908,9 +891,6 @@ function openProfileEditor() {
       settings: {
         bio: bio.value,
         avatar: avatarValue,
-        accentColor: accentColor.value,
-        showStats: showStats.checked,
-        isPrivate: isPrivate.checked,
         links: {
           instagram: instagram.value,
           x: x.value,
@@ -921,6 +901,7 @@ function openProfileEditor() {
       }
     });
     state.user = result.user;
+    applyUserTheme(result.user?.settings);
     await refreshData();
     dialog.close();
     render();
@@ -928,6 +909,95 @@ function openProfileEditor() {
   panel.append(form);
   dialogContent.append(panel);
   dialog.showModal();
+}
+
+function openSettingsEditor() {
+  dialogContent.innerHTML = "";
+  const panel = el("section", "profile-editor settings-editor");
+  panel.append(el("h2", "section-title", "Parametres"));
+  panel.append(el("p", "settings-help", "Ces preferences restent liees a ton compte et s'appliquent a toute la webapp."));
+
+  const settings = state.user?.settings || {};
+  const form = el("form", "profile-form");
+
+  const themeLabel = el("label", "theme-picker");
+  const themeText = el("span", "", "Couleur principale");
+  const accentColor = document.createElement("input");
+  accentColor.type = "color";
+  accentColor.value = normalizeAccentColor(settings.accentColor || localStorage.getItem("suivi_accent_color") || DEFAULT_ACCENT_COLOR);
+  themeLabel.append(themeText, accentColor);
+
+  const region = settingSelect("Region des sorties", [
+    ["FR", "France"],
+    ["BE", "Belgique"],
+    ["CH", "Suisse"],
+    ["CA", "Canada"],
+    ["US", "Etats-Unis"]
+  ], settings.region || "FR");
+
+  const privacyLabel = settingToggle("Profil prive", "Seuls tes amis peuvent voir ta bibliotheque et ton activite.", Boolean(settings.isPrivate));
+  const showStatsLabel = settingToggle("Afficher mes statistiques", "Montre tes stats sur ton profil public/ami.", settings.showStats !== false);
+  const notificationsLabel = settingToggle("Rappels de sorties", "Prepare l'app pour les rappels de nouveaux episodes.", Boolean(settings.notifications));
+  const adultLabel = settingToggle("Inclure le contenu adulte", "Autorise ce contenu dans la recherche TMDB.", Boolean(settings.adultContent));
+
+  const submit = el("button", "primary-button", "Enregistrer les parametres");
+  submit.type = "submit";
+
+  accentColor.addEventListener("input", () => {
+    applyAccentColor(accentColor.value);
+  });
+
+  form.append(themeLabel, region.label, privacyLabel.label, showStatsLabel.label, notificationsLabel.label, adultLabel.label, submit);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const result = await api.updateProfile({
+      settings: {
+        accentColor: accentColor.value,
+        region: region.input.value,
+        isPrivate: privacyLabel.input.checked,
+        showStats: showStatsLabel.input.checked,
+        notifications: notificationsLabel.input.checked,
+        adultContent: adultLabel.input.checked
+      }
+    });
+    state.user = result.user;
+    applyUserTheme(result.user?.settings);
+    await refreshData();
+    dialog.close();
+    render();
+  });
+
+  panel.append(form);
+  dialogContent.append(panel);
+  dialog.showModal();
+}
+
+function settingToggle(title, helper, checked) {
+  const label = el("label", "settings-row");
+  const copy = el("span", "settings-row-copy");
+  copy.append(el("strong", "", title), el("small", "", helper));
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  label.append(copy, input);
+  return { label, input };
+}
+
+function settingSelect(title, options, value) {
+  const label = el("label", "settings-row settings-row--select");
+  const copy = el("span", "settings-row-copy");
+  copy.append(el("strong", "", title), el("small", "", "Utilisee pour les sorties et disponibilites."));
+  const input = document.createElement("select");
+  input.className = "status-select";
+  options.forEach(([optionValue, optionLabel]) => {
+    const option = document.createElement("option");
+    option.value = optionValue;
+    option.textContent = optionLabel;
+    option.selected = optionValue === value;
+    input.append(option);
+  });
+  label.append(copy, input);
+  return { label, input };
 }
 
 function socialInput(label, value) {

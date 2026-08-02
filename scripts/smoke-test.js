@@ -88,9 +88,10 @@ async function main() {
   token = userA.token;
   const profile = await api("/api/profile", {
     method: "PATCH",
-    body: JSON.stringify({ name: "Smoke A Updated", settings: { bio: "Smoke profile" } })
+    body: JSON.stringify({ name: "Smoke A Updated", settings: { bio: "Smoke profile", accentColor: "#5bbcff" } })
   });
   assert(profile.user?.name === "Smoke A Updated", "profile update works");
+  assert(profile.user?.settings?.accentColor === "#5bbcff", "theme color saves");
 
   console.log("Smoke tests passed");
 }
