@@ -353,12 +353,15 @@ function render() {
 function renderHome() {
   const wrap = el("section", "stagger");
   const watching = libraryByStatus("watching");
+  const recentlyWatched = [...watching].sort(sortByRecentlyWatched);
+  const continueWatching = recentlyWatched.filter(hasAvailableNextEpisode);
   const planned = libraryByStatus("planned");
   const stale = state.library
     .filter((show) => show.user.status === "watching" && daysSince(show.user.updatedAt) >= 14)
     .sort((a, b) => new Date(a.user.updatedAt) - new Date(b.user.updatedAt));
-  const carouselShows = [...watching].sort((a, b) => progressPercent(b) - progressPercent(a)).slice(0, 5);
-  const focusShows = carouselShows.length ? carouselShows : state.library.slice(0, 5);
+  const carouselShows = recentlyWatched.slice(0, 5);
+  const fallbackShows = [...state.library].sort(sortByRecentlyWatched).slice(0, 5);
+  const focusShows = carouselShows.length ? carouselShows : fallbackShows;
 
   wrap.append(topbar(`Bonsoir ${state.user?.name || "Alex"}`, "Ton suivi est sauvegarde et tes prochaines series restent a portee de main."));
 
@@ -369,7 +372,7 @@ function renderHome() {
   }
 
   const grid = el("div", "grid-two");
-  grid.append(sectionList("Continuer", watching.slice(0, 4), true));
+  grid.append(sectionList("Continuer", continueWatching.slice(0, 4), true));
   grid.append(sectionList("Pas regarde depuis longtemps", stale.slice(0, 4), true));
   grid.append(sectionList("A commencer", planned.slice(0, 4), false));
   wrap.append(grid);
@@ -2122,6 +2125,23 @@ function totalWatchedFromProgress(show, progress) {
 
 function libraryByStatus(status) {
   return state.library.filter((item) => item.user.status === status);
+}
+
+function sortByRecentlyWatched(a, b) {
+  const left = new Date(b.user?.updatedAt || 0).getTime();
+  const right = new Date(a.user?.updatedAt || 0).getTime();
+  return left - right;
+}
+
+function hasAvailableNextEpisode(show) {
+  if (show.mediaType === "movie") {
+    return true;
+  }
+  const next = nextEpisode(show);
+  if (!next) {
+    return false;
+  }
+  return episodeIsReleased(show, next.season, next.episode);
 }
 
 function nextEpisode(show) {
