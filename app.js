@@ -359,8 +359,11 @@ function renderHome() {
   const stale = state.library
     .filter((show) => show.user.status === "watching" && hasAvailableNextEpisode(show) && daysSince(show.user.updatedAt) >= 14)
     .sort((a, b) => new Date(a.user.updatedAt) - new Date(b.user.updatedAt));
-  const carouselShows = continueWatching.slice(0, 5);
-  const fallbackShows = [...state.library].sort(sortByRecentlyWatched).slice(0, 5);
+  const carouselShows = recentlyWatched.filter(hasDisplayableNextEpisode).slice(0, 5);
+  const fallbackShows = [...state.library]
+    .filter((show) => show.user?.status !== "watching" || hasDisplayableNextEpisode(show))
+    .sort(sortByRecentlyWatched)
+    .slice(0, 5);
   const focusShows = carouselShows.length ? carouselShows : fallbackShows;
 
   wrap.append(topbar(`Bonsoir ${state.user?.name || "Alex"}`, "Ton suivi est sauvegarde et tes prochaines series restent a portee de main."));
@@ -2069,20 +2072,20 @@ function episodeIsReleased(show, season, episode) {
   if (show.mediaType === "movie") {
     return true;
   }
-  const data = show.episodes?.[`${season}:${episode}`];
-  if (!data?.airDate) {
+  const airDate = episodeAirDate(show, season, episode);
+  if (!airDate) {
     return false;
   }
-  const release = new Date(`${data.airDate}T00:00:00`);
+  const release = new Date(`${airDate}T00:00:00`);
   return release.getTime() <= Date.now();
 }
 
 function timeUntilEpisode(show, season, episode) {
-  const data = show.episodes?.[`${season}:${episode}`];
-  if (!data?.airDate) {
+  const airDate = episodeAirDate(show, season, episode);
+  if (!airDate) {
     return "Pas sorti";
   }
-  const release = new Date(`${data.airDate}T00:00:00`);
+  const release = new Date(`${airDate}T00:00:00`);
   const diff = release.getTime() - Date.now();
   if (diff <= 0) {
     return "Disponible";
@@ -2096,6 +2099,18 @@ function timeUntilEpisode(show, season, episode) {
   }
   const months = Math.ceil(days / 30);
   return `Dans ${months} mois`;
+}
+
+function episodeAirDate(show, season, episode) {
+  const direct = show.episodes?.[`${season}:${episode}`]?.airDate;
+  if (direct) {
+    return direct;
+  }
+  const nextAir = show.nextAirEpisode;
+  if (nextAir?.season === season && nextAir?.episode === episode && nextAir.airDate) {
+    return nextAir.airDate;
+  }
+  return null;
 }
 
 function progressBefore(show, season, episode) {
@@ -2144,6 +2159,22 @@ function hasAvailableNextEpisode(show) {
   return episodeIsReleased(show, next.season, next.episode);
 }
 
+function hasScheduledNextEpisode(show) {
+  if (show.mediaType === "movie") {
+    return false;
+  }
+  const next = nextEpisode(show);
+  const airDate = next ? episodeAirDate(show, next.season, next.episode) : null;
+  if (!airDate) {
+    return false;
+  }
+  return new Date(`${airDate}T00:00:00`).getTime() > Date.now();
+}
+
+function hasDisplayableNextEpisode(show) {
+  return hasAvailableNextEpisode(show) || hasScheduledNextEpisode(show);
+}
+
 function nextEpisode(show) {
   if (!show.user) {
     return show.mediaType === "movie" ? { complete: true } : { season: 1, episode: 1 };
@@ -2188,7 +2219,7 @@ function progressTitle(show, next) {
     return next ? "Film non vu" : "Film vu";
   }
   if (next && !episodeIsReleased(show, next.season, next.episode)) {
-    return "Serie a jour";
+    return hasScheduledNextEpisode(show) ? timeUntilEpisode(show, next.season, next.episode) : "Serie a jour";
   }
   return next ? `Saison ${next.season} · Episode ${next.episode}` : "Serie terminee";
 }
