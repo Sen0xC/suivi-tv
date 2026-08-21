@@ -814,7 +814,9 @@ async function markNextSeen(userId, mediaType, tmdbId) {
 }
 
 function enrichLibrary(db) {
-  return Object.values(db.library).map((item) => enrichItem(item, db.media[dbKey(item.mediaType, item.tmdbId)]));
+  return Object.values(db.library)
+    .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
+    .map((item) => enrichItem(item, db.media[dbKey(item.mediaType, item.tmdbId)]));
 }
 
 function enrichItem(item, media) {

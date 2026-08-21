@@ -357,9 +357,9 @@ function renderHome() {
   const continueWatching = recentlyWatched.filter(hasAvailableNextEpisode);
   const planned = libraryByStatus("planned");
   const stale = state.library
-    .filter((show) => show.user.status === "watching" && daysSince(show.user.updatedAt) >= 14)
+    .filter((show) => show.user.status === "watching" && hasAvailableNextEpisode(show) && daysSince(show.user.updatedAt) >= 14)
     .sort((a, b) => new Date(a.user.updatedAt) - new Date(b.user.updatedAt));
-  const carouselShows = recentlyWatched.slice(0, 5);
+  const carouselShows = continueWatching.slice(0, 5);
   const fallbackShows = [...state.library].sort(sortByRecentlyWatched).slice(0, 5);
   const focusShows = carouselShows.length ? carouselShows : fallbackShows;
 
@@ -2186,6 +2186,9 @@ function progressPercent(show) {
 function progressTitle(show, next) {
   if (show.mediaType === "movie") {
     return next ? "Film non vu" : "Film vu";
+  }
+  if (next && !episodeIsReleased(show, next.season, next.episode)) {
+    return "Serie a jour";
   }
   return next ? `Saison ${next.season} · Episode ${next.episode}` : "Serie terminee";
 }
