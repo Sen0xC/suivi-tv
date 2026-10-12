@@ -16,6 +16,7 @@ const LOCAL_USER_ID = process.env.APP_USER_ID || "local-user";
 const LOCAL_USER_NAME = process.env.APP_USER_NAME || "Alex";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const TRENDING_CACHE_TTL_MS = 1000 * 60 * 10;
+const TOP_RATED_CACHE_TTL_MS = 1000 * 60 * 30;
 const UPCOMING_REFRESH_TTL_MS = 1000 * 60 * 60 * 6;
 const memoryCache = new Map();
 const upcomingRefreshCache = new Map();
@@ -170,6 +171,12 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/top-rated") {
+    const items = await getTopRated();
+    sendJson(res, 200, { items });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/recommendations") {
     const sessionUser = await requireSession(req);
     const db = await readDb(sessionUser.id);
@@ -261,6 +268,38 @@ async function getTrending() {
   }
 
   return fallbackCatalog.map((item) => normalizeFallback(item));
+}
+
+async function getTopRated() {
+  if (!hasTmdbAuth()) {
+    return fallbackCatalog
+      .map((item) => normalizeFallback(item))
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+  }
+
+  return cached("discover:top-rated:fr-FR", TOP_RATED_CACHE_TTL_MS, async () => {
+    try {
+      const params = {
+        language: "fr-FR",
+        sort_by: "vote_average.desc",
+        "vote_count.gte": 200,
+        include_adult: "false"
+      };
+      const [tv, movie] = await Promise.all([
+        tmdb("/discover/tv", params),
+        tmdb("/discover/movie", params)
+      ]);
+      return [...tv.results, ...movie.results]
+        .map((item) => normalizeSearchResult({ ...item, media_type: item.media_type || (item.title ? "movie" : "tv") }))
+        .filter((item) => item.title)
+        .sort((a, b) => (b.rating || 0) - (a.rating || 0))
+        .slice(0, 18);
+    } catch {
+      return fallbackCatalog
+        .map((item) => normalizeFallback(item))
+        .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    }
+  });
 }
 
 async function cached(key, ttlMs, producer) {
@@ -797,6 +836,11 @@ async function markNextSeen(userId, mediaType, tmdbId) {
   } else {
     const next = nextEpisode(media, item.watched);
     if (next) {
+      if (!episodeIsReleased(media, next.season, next.episode)) {
+        const error = new Error("Le prochain episode n'est pas encore disponible");
+        error.statusCode = 409;
+        throw error;
+      }
       item.watched = next;
       if (!nextEpisode(media, item.watched)) {
         item.status = "finished";
@@ -1037,6 +1081,11 @@ function nextEpisode(media, watched) {
     return { season: watched.season + 1, episode: 1 };
   }
   return null;
+}
+
+function episodeIsReleased(media, season, episode) {
+  const airDate = media.episodes?.[`${season}:${episode}`]?.airDate || (media.nextAirEpisode?.season === season && media.nextAirEpisode?.episode === episode ? media.nextAirEpisode.airDate : null);
+  return Boolean(airDate) && new Date(`${airDate}T00:00:00`).getTime() <= Date.now();
 }
 
 async function readDb(userId = LOCAL_USER_ID) {

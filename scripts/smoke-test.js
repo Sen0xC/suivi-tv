@@ -43,6 +43,20 @@ async function main() {
   const me = await api("/api/me");
   assert(me.user?.id === userA.user.id, "session loads /api/me");
 
+  const topRated = await api("/api/top-rated");
+  assert(topRated.items?.length, "top rated returns items");
+
+  const secondSession = await api("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email: `smoke-a.${suffix}@example.com`, password: "SmokeTest123!" })
+  });
+  const firstSession = token;
+  token = firstSession;
+  assert((await api("/api/me")).user?.id === userA.user.id, "first concurrent session remains valid");
+  token = secondSession.token;
+  assert((await api("/api/me")).user?.id === userA.user.id, "second concurrent session remains valid");
+  token = firstSession;
+
   const search = await api("/api/search?query=dark");
   assert(search.items?.length, "search returns items");
   const item = search.items.find((entry) => entry.mediaType === "tv") || search.items[0];

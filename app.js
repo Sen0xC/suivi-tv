@@ -26,6 +26,9 @@ const api = {
   async trending() {
     return request("/api/trending");
   },
+  async topRated() {
+    return request("/api/top-rated");
+  },
   async recommendations() {
     return request("/api/recommendations");
   },
@@ -94,6 +97,7 @@ const state = {
   library: [],
   social: { friends: [], lists: [] },
   explore: [],
+  topRated: [],
   recommendations: [],
   query: "",
   suggestions: [],
@@ -127,7 +131,9 @@ async function request(url, options = {}) {
   const raw = await response.text();
   const data = contentType.includes("application/json") && raw ? JSON.parse(raw) : {};
   if (!response.ok) {
-    throw new Error(data.detail || data.error || readableHttpError(response, raw));
+    const error = new Error(data.detail || data.error || readableHttpError(response, raw));
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -169,9 +175,12 @@ async function refreshData(retriedJwt = false) {
       state.error = "";
       return;
     }
-    if (error.message === "Connexion requise") {
+    if (error.status === 401) {
       localStorage.removeItem("suivi_session_token");
       state.authToken = "";
+      state.user = null;
+      state.library = [];
+      state.social = { friends: [], lists: [] };
       state.error = "";
       return;
     }
@@ -238,8 +247,9 @@ async function loadDiscoveryData() {
   }
 
   try {
-    const [trending, recommendations] = await Promise.all([api.trending(), api.recommendations()]);
+    const [trending, topRated, recommendations] = await Promise.all([api.trending(), api.topRated(), api.recommendations()]);
     state.explore = mergeExplore(trending.items, state.library);
+    state.topRated = mergeExplore(topRated.items, state.library);
     state.recommendations = mergeExplore(recommendations.items, state.library);
     render();
   } catch (error) {
@@ -275,6 +285,17 @@ function bindShell() {
     if (!event.target.closest(".month-day.has-release")) {
       document.querySelectorAll(".month-day.is-open").forEach((day) => day.classList.remove("is-open"));
     }
+  });
+
+  window.addEventListener("storage", (event) => {
+    if (event.key !== "suivi_session_token" || event.newValue === state.authToken) {
+      return;
+    }
+    state.authToken = event.newValue || "";
+    state.user = null;
+    state.library = [];
+    state.social = { friends: [], lists: [] };
+    refreshData().then(render).catch(() => {});
   });
 }
 
@@ -379,6 +400,7 @@ function renderHome() {
   grid.append(sectionList("Pas regarde depuis longtemps", stale.slice(0, 4), true));
   grid.append(sectionList("A commencer", planned.slice(0, 4), false));
   wrap.append(grid);
+  wrap.append(sectionList("Derniers visionnages", viewingHistory().slice(0, 6), false));
   wrap.append(upcomingPanel());
   return wrap;
 }
@@ -494,6 +516,12 @@ function renderExplore() {
     wrap.append(suggestions);
   }
 
+  if (!state.query.trim() && state.topRated.length) {
+    const topRated = posterGrid("Les mieux notes", state.topRated.slice(0, 10));
+    topRated.classList.add("top-rated-picks");
+    wrap.append(topRated);
+  }
+
   const results = posterGrid(state.query.trim() ? "Resultats" : "Tendances", state.explore);
   results.classList.add("explore-results");
   wrap.append(results);
@@ -555,11 +583,11 @@ function renderCalendar() {
   const panel = el("section", "panel");
   panel.append(el("h2", "section-title", "A venir"));
   const list = el("div", "calendar-list");
-  const shows = state.library.filter((item) => item.nextAirEpisode?.airDate || item.nextAir);
-  if (!shows.length) {
+  const episodes = upcomingLibraryEpisodes();
+  if (!episodes.length) {
     list.append(el("p", "empty", "TMDB ne renvoie pas encore de prochaine date pour ta bibliotheque."));
   }
-  shows.sort(sortByAirDate).forEach((show) => list.append(calendarRow(show)));
+  episodes.sort(sortEpisodeByAirDate).forEach((entry) => list.append(calendarRow(entry.show, entry.air)));
   panel.append(list);
   wrap.append(panel);
   return wrap;
@@ -626,13 +654,8 @@ function calendarMonthPanel() {
 }
 
 function upcomingDatesMap() {
-  return state.library.reduce((acc, show) => {
-    const value = show.nextAirEpisode?.airDate || show.nextAir;
-    if (!value) {
-      return acc;
-    }
-    const key = value.slice(0, 10);
-    const air = show.nextAirEpisode || { airDate: show.nextAir };
+  return upcomingLibraryEpisodes().reduce((acc, { show, air }) => {
+    const key = air.airDate.slice(0, 10);
     const events = acc.get(key) || [];
     events.push({
       title: show.title,
@@ -1570,9 +1593,11 @@ function progressPanel(show, next) {
   header.append(text, el("span", "progress-value", `${progressPercent(show)}%`));
   panel.append(header, bar(progressPercent(show)));
 
-  const button = el("button", "primary-button", next ? "Marquer comme vu" : "Revoir la fiche");
+  const canMark = next && (show.mediaType === "movie" || episodeIsReleased(show, next.season, next.episode));
+  const button = el("button", "primary-button", next ? (canMark ? "Marquer comme vu" : progressTitle(show, next)) : "Revoir la fiche");
   button.type = "button";
-  button.addEventListener("click", () => (next ? markSeen(show) : openShow(show)));
+  button.disabled = Boolean(next && !canMark);
+  button.addEventListener("click", () => (canMark ? markSeen(show) : openShow(show)));
   panel.append(button);
   return panel;
 }
@@ -1924,13 +1949,27 @@ async function toggleFavorite(show) {
 }
 
 async function markSeen(show) {
-  const response = await api.seen(show.mediaType, show.tmdbId);
-  upsertLibraryItem(response.item);
-  render();
-  if (dialog.open) {
-    renderDialog(response.item);
+  const next = nextEpisode(show);
+  if (show.mediaType === "tv" && (!next || !episodeIsReleased(show, next.season, next.episode))) {
+    return;
   }
-  refreshData().then(render).catch(() => {});
+  try {
+    const response = await api.seen(show.mediaType, show.tmdbId);
+    upsertLibraryItem(response.item);
+    render();
+    if (dialog.open) {
+      renderDialog(response.item);
+    }
+    refreshData().then(render).catch(() => {});
+  } catch (error) {
+    if (error.status === 401) {
+      await refreshData();
+      render();
+      return;
+    }
+    state.error = error.message;
+    render();
+  }
 }
 
 async function markSeasonSeen(show, season) {
@@ -2142,6 +2181,12 @@ function libraryByStatus(status) {
   return state.library.filter((item) => item.user.status === status);
 }
 
+function viewingHistory() {
+  return state.library
+    .filter((show) => watchedCount(show) > 0)
+    .sort(sortByRecentlyWatched);
+}
+
 function sortByRecentlyWatched(a, b) {
   const left = new Date(b.user?.updatedAt || 0).getTime();
   const right = new Date(a.user?.updatedAt || 0).getTime();
@@ -2228,9 +2273,26 @@ function formatDate(value) {
   return new Date(value).toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
 }
 
-function calendarRow(show) {
+function upcomingLibraryEpisodes() {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  return state.library.flatMap((show) => {
+    const episodes = Object.entries(show.episodes || {})
+      .map(([key, air]) => {
+        const [season, episode] = key.split(":").map(Number);
+        return { ...air, season, episode };
+      })
+      .filter((air) => air.airDate && airDateValue(air) >= now.getTime());
+    const nextAir = show.nextAirEpisode;
+    if (nextAir?.airDate && airDateValue(nextAir) >= now.getTime() && !episodes.some((air) => air.season === nextAir.season && air.episode === nextAir.episode)) {
+      episodes.push(nextAir);
+    }
+    return episodes.map((air) => ({ show, air }));
+  });
+}
+
+function calendarRow(show, air = show.nextAirEpisode || { airDate: show.nextAir }) {
   const row = el("article", "calendar-row");
-  const air = show.nextAirEpisode || { airDate: show.nextAir };
   const thumb = el("div", "calendar-thumb");
   const image = document.createElement("img");
   image.src = air.still || show.backdrop || show.poster || "icons/icon.svg";
@@ -2245,11 +2307,15 @@ function calendarRow(show) {
 }
 
 function sortByAirDate(a, b) {
-  return airDateValue(a) - airDateValue(b);
+  return airDateValue(a.nextAirEpisode || { airDate: a.nextAir }) - airDateValue(b.nextAirEpisode || { airDate: b.nextAir });
 }
 
-function airDateValue(show) {
-  const value = show.nextAirEpisode?.airDate || show.nextAir;
+function sortEpisodeByAirDate(a, b) {
+  return airDateValue(a.air) - airDateValue(b.air);
+}
+
+function airDateValue(air) {
+  const value = air?.airDate || air?.nextAir || air;
   return new Date(value.includes("T") ? value : `${value}T12:00:00`).getTime();
 }
 
