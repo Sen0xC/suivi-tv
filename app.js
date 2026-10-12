@@ -661,7 +661,7 @@ function upcomingDatesMap() {
       title: show.title,
       subtitle: airEpisodeLabel(air),
       poster: air.still || show.poster || show.backdrop || "icons/icon.svg",
-      time: releaseCountdown(value)
+      time: releaseCountdown(air.airDate)
     });
     acc.set(key, events);
     return acc;
@@ -2280,11 +2280,11 @@ function upcomingLibraryEpisodes() {
     const episodes = Object.entries(show.episodes || {})
       .map(([key, air]) => {
         const [season, episode] = key.split(":").map(Number);
-        return { ...air, season, episode };
+        return { ...(air || {}), season, episode };
       })
-      .filter((air) => air.airDate && airDateValue(air) >= now.getTime());
+      .filter((air) => air.airDate && Number.isFinite(airDateValue(air)) && airDateValue(air) >= now.getTime());
     const nextAir = show.nextAirEpisode;
-    if (nextAir?.airDate && airDateValue(nextAir) >= now.getTime() && !episodes.some((air) => air.season === nextAir.season && air.episode === nextAir.episode)) {
+    if (nextAir?.airDate && Number.isFinite(airDateValue(nextAir)) && airDateValue(nextAir) >= now.getTime() && !episodes.some((air) => air.season === nextAir.season && air.episode === nextAir.episode)) {
       episodes.push(nextAir);
     }
     return episodes.map((air) => ({ show, air }));
@@ -2316,6 +2316,9 @@ function sortEpisodeByAirDate(a, b) {
 
 function airDateValue(air) {
   const value = air?.airDate || air?.nextAir || air;
+  if (typeof value !== "string" || !value.trim()) {
+    return Number.NaN;
+  }
   return new Date(value.includes("T") ? value : `${value}T12:00:00`).getTime();
 }
 
